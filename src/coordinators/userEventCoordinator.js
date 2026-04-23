@@ -67,9 +67,11 @@ export async function runHandleUserUpdateFlow(
 
         const previousLocationL = parseLocation(previousLocation);
         const newLocationL = parseLocation(newLocation);
+        const dialogLocationTag = userDialog?.$location?.tag;
         if (
-            previousLocationL.tag === userDialog.$location.tag ||
-            newLocationL.tag === userDialog.$location.tag
+            dialogLocationTag &&
+            (previousLocationL.tag === dialogLocationTag ||
+                newLocationL.tag === dialogLocationTag)
         ) {
             // update user dialog instance occupants
             applyUserDialogLocation(true);

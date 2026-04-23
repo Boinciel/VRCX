@@ -1,9 +1,7 @@
 <template>
     <div class="w-223 flex-1 min-h-0 flex flex-col">
         <DialogHeader class="sr-only">
-            <DialogTitle>{{
-                userDialog.ref?.displayName || userDialog.id || t('dialog.user.info.header')
-            }}</DialogTitle>
+            <DialogTitle>{{ dialogTitle }}</DialogTitle>
             <DialogDescription>{{ getUserStateText(userDialog.ref || {}) }}</DialogDescription>
         </DialogHeader>
         <UserSummaryHeader
@@ -24,27 +22,31 @@
                 <UserDialogInfoTab ref="infoTabRef" @show-bio-dialog="showBioDialog" />
             </template>
 
-            <template v-if="!isSelf && !currentUser.hasSharedConnectionsOptOut" #mutual>
+            <template v-if="showResoniteTab" #Resonite>
+                <UserDialogResoniteTab />
+            </template>
+
+            <template v-if="!isExternalUser && !isSelf && !currentUser.hasSharedConnectionsOptOut" #mutual>
                 <UserDialogMutualFriendsTab ref="mutualFriendsTabRef" />
             </template>
 
-            <template #Groups>
+            <template v-if="!isExternalUser" #Groups>
                 <UserDialogGroupsTab ref="groupsTabRef" />
             </template>
 
-            <template #Worlds>
+            <template v-if="!isExternalUser" #Worlds>
                 <UserDialogWorldsTab ref="worldsTabRef" />
             </template>
 
-            <template v-if="!isSelf" #favorite-worlds>
+            <template v-if="!isExternalUser && !isSelf" #favorite-worlds>
                 <UserDialogFavoriteWorldsTab ref="favoriteWorldsTabRef" />
             </template>
 
-            <template v-if="!isSelf" #Avatars>
+            <template v-if="!isExternalUser && !isSelf" #Avatars>
                 <UserDialogAvatarsTab ref="avatarsTabRef" />
             </template>
 
-            <template #Activity>
+            <template v-if="!isExternalUser" #Activity>
                 <UserDialogActivityTab ref="activityTabRef" />
             </template>
 
@@ -109,6 +111,7 @@
     import UserDialogGroupsTab from './UserDialogGroupsTab.vue';
     import UserDialogInfoTab from './UserDialogInfoTab.vue';
     import UserDialogMutualFriendsTab from './UserDialogMutualFriendsTab.vue';
+    import UserDialogResoniteTab from './UserDialogResoniteTab.vue';
     import UserDialogWorldsTab from './UserDialogWorldsTab.vue';
     import UserSummaryHeader from './UserSummaryHeader.vue';
 
@@ -120,8 +123,69 @@
     import SocialStatusDialog from './SocialStatusDialog.vue';
 
     const { t } = useI18n();
+    function firstNonEmptyString(...values) {
+        for (const value of values) {
+            const normalized = String(value || '').trim();
+            if (normalized) {
+                return normalized;
+            }
+        }
+
+        return '';
+    }
+
     const isSelf = computed(() => userDialog.value.id === currentUser.value.id);
+    const isExternalUser = computed(
+        () => userDialog.value.isExternal || String(userDialog.value.id || '').startsWith('resonite:')
+    );
+    const dialogTitle = computed(() => {
+        const dialogId = firstNonEmptyString(userDialog.value.id, userDialog.value.ref?.id);
+        const rawDisplayName = firstNonEmptyString(userDialog.value.ref?.displayName);
+        const resoniteUserId = firstNonEmptyString(userDialog.value.ref?.resonite?.userId);
+        const resoniteUsername = firstNonEmptyString(userDialog.value.ref?.resonite?.username);
+
+        if (!isExternalUser.value) {
+            return firstNonEmptyString(rawDisplayName, dialogId, t('dialog.user.info.header'));
+        }
+
+        if (rawDisplayName && rawDisplayName !== dialogId && rawDisplayName !== resoniteUserId) {
+            return rawDisplayName;
+        }
+
+        return firstNonEmptyString(
+            resoniteUsername,
+            rawDisplayName,
+            resoniteUserId,
+            dialogId,
+            t('dialog.user.info.header')
+        );
+    });
+    const showResoniteTab = computed(() => {
+        if (!isExternalUser.value) {
+            return false;
+        }
+
+        const resonite = userDialog.value?.ref?.resonite;
+        if (!resonite || typeof resonite !== 'object') {
+            return false;
+        }
+
+        return Object.keys(resonite).length > 0;
+    });
     const userDialogTabs = computed(() => {
+        if (isExternalUser.value) {
+            const tabs = [
+                { value: 'Info', label: t('dialog.user.info.header') },
+                { value: 'JSON', label: t('dialog.user.json.header') }
+            ];
+
+            if (showResoniteTab.value) {
+                tabs.splice(1, 0, { value: 'Resonite', label: 'Resonite' });
+            }
+
+            return tabs;
+        }
+
         const tabs = [
             { value: 'Info', label: t('dialog.user.info.header') },
             { value: 'Groups', label: t('dialog.user.groups.header') },
@@ -265,7 +329,7 @@
         loading: false,
         pronouns: ''
     });
-    const treeData = ref({});
+    const treeData = ref(null);
 
     /**
      *
@@ -328,6 +392,18 @@
     function handleUserDialogTab(tabName) {
         userDialog.value.lastActiveTab = tabName;
         const userId = userDialog.value.id;
+
+        if (
+            isExternalUser.value &&
+            tabName !== 'Info' &&
+            tabName !== 'JSON' &&
+            !(tabName === 'Resonite' && showResoniteTab.value)
+        ) {
+            userDialog.value.activeTab = 'Info';
+            userDialog.value.lastActiveTab = 'Info';
+            return;
+        }
+
         if (tabName === 'Info') {
             infoTabRef.value?.onTabActivated();
         } else if (tabName === 'mutual') {
@@ -374,6 +450,16 @@
      */
     function loadLastActiveTab() {
         let tab = userDialog.value.lastActiveTab;
+        if (
+            isExternalUser.value &&
+            tab !== 'Info' &&
+            tab !== 'JSON' &&
+            !(tab === 'Resonite' && showResoniteTab.value)
+        ) {
+            tab = 'Info';
+            userDialog.value.activeTab = tab;
+            userDialog.value.lastActiveTab = tab;
+        }
         if (isSelf.value && (tab === 'Avatars' || tab === 'favorite-worlds')) {
             tab = 'Info';
             userDialog.value.activeTab = tab;

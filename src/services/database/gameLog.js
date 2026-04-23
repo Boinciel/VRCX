@@ -2,6 +2,416 @@ import { dbVars } from '../database';
 
 import sqliteService from '../sqlite.js';
 
+function isResoniteExternalUser(input) {
+    const normalizedId = String(input?.id || '').trim();
+    return normalizedId.startsWith('resonite:') || /^[uU]-/.test(normalizedId);
+}
+
+function isCountableResoniteLocation(value) {
+    const normalized = String(value || '')
+        .trim()
+        .toLowerCase();
+    return Boolean(
+        normalized &&
+        normalized !== 'offline' &&
+        normalized !== 'traveling' &&
+        normalized !== 'private'
+    );
+}
+
+async function getResonitePresenceStats(input) {
+    const ref = {
+        timeSpent: 0,
+        lastSeen: '',
+        joinCount: 0,
+        userId: input.id,
+        previousDisplayNames: new Map()
+    };
+    const params = {
+        '@userId': input.id
+    };
+
+    await sqliteService.execute(
+        (row) => {
+            if (row[0]) {
+                ref.lastSeen = row[0];
+            }
+        },
+        `SELECT MAX(created_at) FROM (
+            SELECT created_at FROM ${dbVars.userPrefix}_feed_online_offline WHERE user_id = @userId
+            UNION ALL
+            SELECT created_at FROM ${dbVars.userPrefix}_feed_gps WHERE user_id = @userId
+            UNION ALL
+            SELECT created_at FROM ${dbVars.userPrefix}_feed_status WHERE user_id = @userId
+        )`,
+        params
+    );
+
+    await sqliteService.execute(
+        (row) => {
+            ref.joinCount = Number(row[0] || 0);
+        },
+        `SELECT COUNT(DISTINCT location) FROM (
+            SELECT location FROM ${dbVars.userPrefix}_feed_online_offline WHERE type = 'Online' AND user_id = @userId
+            UNION ALL
+            SELECT location FROM ${dbVars.userPrefix}_feed_gps WHERE user_id = @userId
+        ) WHERE location IS NOT NULL AND TRIM(location) != '' AND LOWER(TRIM(location)) NOT IN ('offline', 'traveling', 'private')`,
+        params
+    );
+
+    await sqliteService.execute(
+        (row) => {
+            ref.timeSpent = Number(row[0] || 0);
+        },
+        `SELECT COALESCE(SUM(time), 0) FROM (
+            SELECT time FROM ${dbVars.userPrefix}_feed_online_offline WHERE type = 'Offline' AND user_id = @userId
+            UNION ALL
+            SELECT time FROM ${dbVars.userPrefix}_feed_gps WHERE user_id = @userId
+        )`,
+        params
+    );
+
+    return ref;
+}
+
+async function getResoniteSessionWindowsByUserId(userId) {
+    const groupingTimeTolerance = 1 * 60 * 60 * 1000; // 1 hour
+    const sessions = [];
+    let currentSession;
+
+    const isTrackedLocation = (value) => {
+        return isCountableResoniteLocation(value);
+    };
+
+    const ensureSession = (createdAtIso, createdAtTs, location) => {
+        const normalizedLocation = String(location || '').trim();
+        if (!isTrackedLocation(normalizedLocation)) {
+            return null;
+        }
+
+        if (
+            !currentSession ||
+            currentSession.location !== normalizedLocation ||
+            createdAtTs - currentSession.endTs > groupingTimeTolerance
+        ) {
+            currentSession = {
+                location: normalizedLocation,
+                startTs: Date.parse(createdAtIso),
+                endTs: createdAtTs
+            };
+            sessions.push(currentSession);
+            return currentSession;
+        }
+
+        currentSession.endTs = createdAtTs;
+        return currentSession;
+    };
+
+    await sqliteService.execute(
+        (dbRow) => {
+            const [
+                createdAtIso,
+                createdAtTs,
+                location,
+                time,
+                previousLocation,
+                eventType
+            ] = dbRow;
+            const duration = Number(time || 0);
+
+            if (eventType === 'GPS') {
+                const previousSession = ensureSession(
+                    createdAtIso,
+                    createdAtTs,
+                    previousLocation
+                );
+                if (previousSession && duration > 0) {
+                    previousSession.endTs = Math.max(
+                        previousSession.endTs,
+                        previousSession.startTs + duration
+                    );
+                }
+
+                ensureSession(createdAtIso, createdAtTs, location);
+                return;
+            }
+
+            const session = ensureSession(createdAtIso, createdAtTs, location);
+            if (session && eventType === 'Offline' && duration > 0) {
+                session.endTs = Math.max(
+                    session.endTs,
+                    session.startTs + duration
+                );
+            }
+        },
+        `SELECT created_at, strftime('%s', created_at) * 1000 AS created_at_ts, location, time, previous_location, event_type
+         FROM (
+             SELECT created_at, location, time, NULL AS previous_location, type AS event_type
+             FROM ${dbVars.userPrefix}_feed_online_offline
+             WHERE user_id = @userId
+                 AND type IN ('Online', 'Offline')
+             UNION ALL
+             SELECT created_at, location, time, previous_location, 'GPS' AS event_type
+             FROM ${dbVars.userPrefix}_feed_gps
+             WHERE user_id = @userId
+         )
+         ORDER BY created_at ASC`,
+        {
+            '@userId': userId
+        }
+    );
+
+    return sessions;
+}
+
+async function getAllResonitePresenceStats(userIds) {
+    if (!Array.isArray(userIds) || userIds.length === 0) {
+        return [];
+    }
+
+    let userIdsString = '';
+    for (const userId of userIds) {
+        userIdsString += `'${String(userId).replaceAll("'", "''")}', `;
+    }
+    userIdsString = userIdsString.slice(0, -2);
+    if (!userIdsString) {
+        return [];
+    }
+
+    const dataByUserId = new Map();
+
+    await sqliteService.execute(
+        (row) => {
+            const createdAt = String(row[0] || '').trim();
+            const userId = String(row[1] || '').trim();
+            const displayName = String(row[2] || '').trim();
+            const joinLocation = String(row[3] || '').trim();
+            const duration = Number(row[4] || 0);
+
+            if (!userId) {
+                return;
+            }
+
+            let entry = dataByUserId.get(userId);
+            if (!entry) {
+                entry = {
+                    lastSeen: createdAt,
+                    userId,
+                    timeSpent: 0,
+                    joinCount: 0,
+                    displayName,
+                    joinLocations: new Set()
+                };
+                dataByUserId.set(userId, entry);
+            }
+
+            if (!entry.lastSeen) {
+                entry.lastSeen = createdAt;
+            }
+            if (!entry.displayName && displayName) {
+                entry.displayName = displayName;
+            }
+            if (Number.isFinite(duration) && duration > 0) {
+                entry.timeSpent += duration;
+            }
+            if (isCountableResoniteLocation(joinLocation)) {
+                entry.joinLocations.add(joinLocation);
+            }
+        },
+        `SELECT created_at, user_id, display_name, join_location, duration FROM (
+            SELECT created_at, user_id, display_name, NULL AS join_location, NULL AS duration
+            FROM ${dbVars.userPrefix}_feed_status
+            WHERE user_id IN (${userIdsString})
+            UNION ALL
+            SELECT created_at, user_id, display_name,
+                CASE WHEN type = 'Online' THEN location ELSE NULL END AS join_location,
+                CASE WHEN type = 'Offline' THEN time ELSE NULL END AS duration
+            FROM ${dbVars.userPrefix}_feed_online_offline
+            WHERE user_id IN (${userIdsString})
+            UNION ALL
+            SELECT created_at, user_id, display_name, location AS join_location, time AS duration
+            FROM ${dbVars.userPrefix}_feed_gps
+            WHERE user_id IN (${userIdsString})
+        ) ORDER BY user_id ASC, created_at DESC`
+    );
+
+    return Array.from(dataByUserId.values()).map((entry) => ({
+        lastSeen: entry.lastSeen,
+        userId: entry.userId,
+        timeSpent: entry.timeSpent,
+        joinCount: entry.joinLocations.size,
+        displayName: entry.displayName
+    }));
+}
+
+async function getResonitePreviousInstancesByUserId(input) {
+    const groupingTimeTolerance = 1 * 60 * 60 * 1000; // 1 hour
+    const data = new Set();
+    let currentGroup;
+    const sharedOnly = input?.sharedOnly === true;
+    const currentUserSessions = [];
+    const sharedWithUserId = String(input?.sharedWithUserId || '').trim();
+
+    const isTrackedLocation = (value) => {
+        const location = String(value || '').trim();
+        if (!location) {
+            return false;
+        }
+        const normalized = location.toLowerCase();
+        return normalized !== 'offline' && normalized !== 'traveling';
+    };
+
+    const ensureGroup = (
+        createdAtIso,
+        createdAtTs,
+        location,
+        worldName,
+        groupName
+    ) => {
+        if (!isTrackedLocation(location)) {
+            return null;
+        }
+
+        const resolvedWorldName = String(worldName || location || '').trim();
+        if (
+            !currentGroup ||
+            currentGroup.location !== location ||
+            createdAtTs - currentGroup.last_ts > groupingTimeTolerance
+        ) {
+            currentGroup = {
+                created_at: createdAtIso,
+                location,
+                time: 0,
+                worldName: resolvedWorldName,
+                groupName: String(groupName || '').trim(),
+                events: [],
+                last_ts: createdAtTs
+            };
+
+            data.add(currentGroup);
+            return currentGroup;
+        }
+
+        currentGroup.last_ts = createdAtTs;
+        if (!currentGroup.worldName && resolvedWorldName) {
+            currentGroup.worldName = resolvedWorldName;
+        }
+        if (!currentGroup.groupName && groupName) {
+            currentGroup.groupName = String(groupName).trim();
+        }
+        return currentGroup;
+    };
+
+    const overlapsCurrentUserSession = (location, startTs, endTs) => {
+        if (!sharedOnly) {
+            return true;
+        }
+
+        const normalizedStartTs = Number(startTs || 0);
+        const normalizedEndTs = Number(endTs || 0);
+
+        if (currentUserSessions.length === 0) {
+            return false;
+        }
+
+        return currentUserSessions.some((session) => {
+            const sessionEndTs = Number(session.endTs || 0);
+            const sessionStartTs = Number(session.startTs || 0);
+            const sessionLocation = String(session.location || '').trim();
+
+            return (
+                sessionLocation === String(location || '').trim() &&
+                normalizedStartTs < sessionEndTs &&
+                normalizedEndTs > sessionStartTs
+            );
+        });
+    };
+
+    if (sharedOnly && sharedWithUserId) {
+        currentUserSessions.push(
+            ...(await getResoniteSessionWindowsByUserId(sharedWithUserId))
+        );
+    }
+
+    await sqliteService.execute(
+        (dbRow) => {
+            const [
+                createdAtIso,
+                createdAtTs,
+                location,
+                worldName,
+                groupName,
+                time,
+                previousLocation,
+                eventType
+            ] = dbRow;
+
+            const duration = Number(time || 0);
+
+            if (eventType === 'GPS') {
+                const previousGroup = ensureGroup(
+                    createdAtIso,
+                    createdAtTs,
+                    previousLocation,
+                    previousLocation,
+                    ''
+                );
+                if (previousGroup && duration > 0) {
+                    previousGroup.time += duration;
+                }
+
+                ensureGroup(
+                    createdAtIso,
+                    createdAtTs,
+                    location,
+                    worldName,
+                    groupName
+                );
+                return;
+            }
+
+            const group = ensureGroup(
+                createdAtIso,
+                createdAtTs,
+                location,
+                worldName,
+                groupName
+            );
+            if (group && eventType === 'Offline' && duration > 0) {
+                group.time += duration;
+            }
+        },
+        `SELECT created_at, strftime('%s', created_at) * 1000 AS created_at_ts, location, world_name, group_name, time, previous_location, event_type
+         FROM (
+             SELECT created_at, location, world_name, group_name, time, NULL AS previous_location, type AS event_type
+             FROM ${dbVars.userPrefix}_feed_online_offline
+             WHERE user_id = @userId
+                 AND type IN ('Online', 'Offline')
+             UNION ALL
+             SELECT created_at, location, world_name, group_name, time, previous_location, 'GPS' AS event_type
+             FROM ${dbVars.userPrefix}_feed_gps
+             WHERE user_id = @userId
+         )
+         ORDER BY created_at ASC`,
+        {
+            '@userId': input.id
+        }
+    );
+
+    if (sharedOnly) {
+        for (const group of Array.from(data)) {
+            const startTs = Date.parse(group.created_at);
+            const endTs = Number(group.last_ts || startTs);
+
+            if (!overlapsCurrentUserSession(group.location, startTs, endTs)) {
+                data.delete(group);
+            }
+        }
+    }
+
+    return data;
+}
+
 const gameLog = {
     async getGamelogDatabase() {
         var gamelogDatabase = [];
@@ -436,6 +846,10 @@ const gameLog = {
     },
 
     async getUserStats(input, inCurrentWorld) {
+        if (isResoniteExternalUser(input)) {
+            return getResonitePresenceStats(input);
+        }
+
         var i = 0;
         var instances = new Set();
         var ref = {
@@ -475,9 +889,15 @@ const gameLog = {
             return [];
         }
         var data = [];
+        const resoniteUserIds = userIds.filter((userId) =>
+            isResoniteExternalUser({ id: userId })
+        );
+        const vrchatUserIds = userIds.filter(
+            (userId) => !isResoniteExternalUser({ id: userId })
+        );
         // this makes me most sad
         var userIdsString = '';
-        for (var userId of userIds) {
+        for (var userId of vrchatUserIds) {
             userIdsString += `'${userId}', `;
         }
         userIdsString = userIdsString.slice(0, -2);
@@ -494,35 +914,42 @@ const gameLog = {
             whereClauses.push(`g.display_name IN (${displayNamesString})`);
         }
 
-        await sqliteService.execute(
-            (dbRow) => {
-                var row = {
-                    lastSeen: dbRow[0],
-                    userId: dbRow[1],
-                    timeSpent: dbRow[2],
-                    joinCount: dbRow[3],
-                    displayName: dbRow[4]
-                };
-                data.push(row);
-            },
-            `SELECT
-                g.created_at,
-                g.user_id,
-                SUM(g.time) AS timeSpent,
-                COUNT(DISTINCT g.location) AS joinCount,
-                g.display_name,
-                MAX(g.id) AS max_id
-            FROM
-                gamelog_join_leave g
-            WHERE
-                ${whereClauses.join('\n                OR ')}
-            GROUP BY
-                g.user_id,
-                g.display_name
-            ORDER BY
-                g.user_id DESC
-            `
-        );
+        if (whereClauses.length > 0) {
+            await sqliteService.execute(
+                (dbRow) => {
+                    var row = {
+                        lastSeen: dbRow[0],
+                        userId: dbRow[1],
+                        timeSpent: dbRow[2],
+                        joinCount: dbRow[3],
+                        displayName: dbRow[4]
+                    };
+                    data.push(row);
+                },
+                `SELECT
+                    g.created_at,
+                    g.user_id,
+                    SUM(g.time) AS timeSpent,
+                    COUNT(DISTINCT g.location) AS joinCount,
+                    g.display_name,
+                    MAX(g.id) AS max_id
+                FROM
+                    gamelog_join_leave g
+                WHERE
+                    ${whereClauses.join('\n                OR ')}
+                GROUP BY
+                    g.user_id,
+                    g.display_name
+                ORDER BY
+                    g.user_id DESC
+                `
+            );
+        }
+
+        if (resoniteUserIds.length > 0) {
+            data.push(...(await getAllResonitePresenceStats(resoniteUserIds)));
+        }
+
         return data;
     },
 
@@ -1182,6 +1609,10 @@ const gameLog = {
     },
 
     async getPreviousInstancesByUserId(input) {
+        if (isResoniteExternalUser(input)) {
+            return getResonitePreviousInstancesByUserId(input);
+        }
+
         var groupingTimeTolerance = 1 * 60 * 60 * 1000; // 1 hour
         var data = new Set();
         var currentGroup;
@@ -1627,6 +2058,10 @@ const gameLog = {
     },
 
     deleteGameLogInstance(input) {
+        if (!Array.isArray(input.events) || input.events.length === 0) {
+            return;
+        }
+
         sqliteService.executeNonQuery(
             `DELETE FROM gamelog_join_leave WHERE (user_id = @user_id OR display_name = @displayName) AND (location = @location) AND (id in (${input.events.join(',')}))`,
             {

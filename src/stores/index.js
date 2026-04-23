@@ -29,6 +29,7 @@ import { useNotificationStore } from './notification';
 import { useNotificationsSettingsStore } from './settings/notifications';
 import { usePhotonStore } from './photon';
 import { useSearchStore } from './search';
+import { useResoniteCredentialsStore } from './resoniteCredentials';
 import { useSharedFeedStore } from './sharedFeed';
 import { useUiStore } from './ui';
 import { useToolsStore } from './tools';
@@ -158,6 +159,7 @@ export function createGlobalStores() {
         sharedFeed: useSharedFeedStore(),
         updateLoop: useUpdateLoopStore(),
         auth: useAuthStore(),
+        resoniteCredentials: useResoniteCredentialsStore(),
         vrcStatus: useVrcStatusStore(),
         charts: useChartsStore(),
         dashboard: useDashboardStore(),
@@ -185,6 +187,7 @@ export {
     useNotificationStore,
     usePhotonStore,
     useSearchStore,
+    useResoniteCredentialsStore,
     useChartsStore,
     useDashboardStore,
     useAdvancedSettingsStore,

@@ -1,6 +1,8 @@
 import { beforeEach, describe, expect, test, vi } from 'vitest';
 import { mount } from '@vue/test-utils';
 
+const getResoniteSessionByHashMock = vi.fn();
+
 const mocks = vi.hoisted(() => ({
     appearanceStore: {
         hideNicknames: false
@@ -39,6 +41,10 @@ vi.mock('../../../../coordinators/friendRelationshipCoordinator', () => ({
 vi.mock('../../../../shared/utils', () => ({
     userImage: vi.fn(() => 'https://example.com/avatar.png'),
     userStatusClass: vi.fn(() => 'status-online')
+}));
+
+vi.mock('../../../../services/resoniteRealtime', () => ({
+    getResoniteSessionByHash: (...args) => getResoniteSessionByHashMock(...args)
 }));
 
 vi.mock('vue-i18n', () => ({
@@ -137,6 +143,8 @@ describe('FriendItem.vue', () => {
         mocks.friendStore.allFavoriteFriendIds = new Set();
         mocks.confirmDeleteFriend.mockReset();
         mocks.showUserDialog.mockReset();
+        getResoniteSessionByHashMock.mockReset();
+        getResoniteSessionByHashMock.mockReturnValue(null);
     });
 
     test('renders nickname when hideNicknames is false', () => {
@@ -176,5 +184,35 @@ describe('FriendItem.vue', () => {
         await button.trigger('click');
         expect(mocks.confirmDeleteFriend).toHaveBeenCalledWith('usr_orphan');
         expect(mocks.showUserDialog).not.toHaveBeenCalled();
+    });
+
+    test('appends Resonite session access label for external world presence', () => {
+        getResoniteSessionByHashMock.mockReturnValue({
+            accessLevel: 'contactsplus'
+        });
+
+        const wrapper = mountItem({
+            friend: makeFriend({
+                id: 'resonite:U-1',
+                isExternal: true,
+                state: 'online',
+                ref: {
+                    displayName: 'Alice',
+                    $userColour: '#fff',
+                    statusDescription: 'Online',
+                    location: '<color=cyan>My World</color>',
+                    traveling: '',
+                    travelingToLocation: '',
+                    $location_at: 123,
+                    resonite: {
+                        currentSessionHash: 'S-hash'
+                    }
+                }
+            })
+        });
+
+        expect(getResoniteSessionByHashMock).toHaveBeenCalledWith('S-hash');
+        expect(wrapper.text()).toContain('My World · Contacts+');
+        expect(wrapper.html()).toContain('color:#00ffff');
     });
 });

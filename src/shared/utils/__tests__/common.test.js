@@ -51,6 +51,30 @@ describe('convertFileUrlToImageUrl', () => {
         );
     });
 
+    test('converts Resonite resdb asset URLs to assets domain URLs', () => {
+        const url =
+            'resdb:///6683441e7234417d08e9d7228f59afc55bac656ad8b1833f34a8105644a49754.webp';
+        expect(convertFileUrlToImageUrl(url)).toBe(
+            'https://assets.resonite.com/6683441e7234417d08e9d7228f59afc55bac656ad8b1833f34a8105644a49754'
+        );
+    });
+
+    test('converts Resonite resdb asset URLs without an extension', () => {
+        const url =
+            'resdb:///6683441e7234417d08e9d7228f59afc55bac656ad8b1833f34a8105644a49754';
+        expect(convertFileUrlToImageUrl(url)).toBe(
+            'https://assets.resonite.com/6683441e7234417d08e9d7228f59afc55bac656ad8b1833f34a8105644a49754'
+        );
+    });
+
+    test('strips file extensions from assets.resonite.com URLs', () => {
+        const url =
+            'https://assets.resonite.com/6683441e7234417d08e9d7228f59afc55bac656ad8b1833f34a8105644a49754.webp';
+        expect(convertFileUrlToImageUrl(url)).toBe(
+            'https://assets.resonite.com/6683441e7234417d08e9d7228f59afc55bac656ad8b1833f34a8105644a49754'
+        );
+    });
+
     test('returns original URL when pattern does not match', () => {
         const url = 'https://example.com/some/other/path';
         expect(convertFileUrlToImageUrl(url)).toBe(url);

@@ -6,6 +6,7 @@ import LocationWorld from '../../LocationWorld.vue';
 import { Button } from '../../ui/button';
 import { i18n } from '../../../plugins';
 import { formatDateFilter } from '../../../shared/utils';
+import { renderResoniteRichText } from '../../../shared/utils/resoniteRichText';
 
 const { t } = i18n.global;
 
@@ -33,6 +34,30 @@ const resolveBool = (maybeRef) => {
         return !!maybeRef.value;
     }
     return !!maybeRef;
+};
+
+const isResoniteRow = (row) => row?.provider === 'resonite';
+
+const createResoniteLocationCell = (row, onShowInfo) => {
+    const label = row?.worldName ?? row?.name ?? row?.location ?? '';
+    const groupName = String(row?.groupName ?? '').trim();
+    const location = row?.location ?? '';
+
+    return (
+        <button
+            type="button"
+            class="inline-flex min-w-0 items-center truncate text-left"
+            onClick={() => onShowInfo?.(location)}
+        >
+            <span
+                class="truncate"
+                innerHTML={renderResoniteRichText(label)}
+            ></span>
+            {groupName ? (
+                <span class="ml-1 truncate">({groupName})</span>
+            ) : null}
+        </button>
+    );
 };
 
 const baseDateColumn = () => ({
@@ -77,10 +102,11 @@ const actionsColumn = ({
     cell: ({ row }) => {
         const original = row.original;
         const isShiftHeld = resolveBool(shiftHeld);
+        const isResonite = isResoniteRow(original);
 
         return (
             <div class="inline-flex items-center justify-end gap-1">
-                {onLaunch ? (
+                {onLaunch && !isResonite ? (
                     <Button
                         size="icon-sm"
                         variant="ghost"
@@ -100,7 +126,11 @@ const actionsColumn = ({
                     class="w-6 h-6 text-xs"
                     onClick={(event) => {
                         event.stopPropagation();
-                        onShowInfo?.(original?.$location?.tag);
+                        onShowInfo?.(
+                            isResonite
+                                ? original?.location
+                                : original?.$location?.tag
+                        );
                     }}
                 >
                     <Info class="h-4 w-4" />
@@ -142,25 +172,34 @@ export const createPreviousInstancesColumns = (variant, config) => {
                 meta: {
                     stretch: true
                 },
-                cell: ({ row }) => (
-                    <Location
-                        location={row.original?.location}
-                        hint={row.original?.worldName}
-                        grouphint={row.original?.groupName}
-                    />
-                )
+                cell: ({ row }) =>
+                    isResoniteRow(row.original) ? (
+                        createResoniteLocationCell(
+                            row.original,
+                            config.onShowInfo
+                        )
+                    ) : (
+                        <Location
+                            location={row.original?.location}
+                            hint={row.original?.worldName}
+                            grouphint={row.original?.groupName}
+                        />
+                    )
             },
             {
                 id: 'creator',
                 accessorFn: (row) => row?.$location?.userId ?? '',
                 size: 170,
                 header: () => t('table.previous_instances.instance_creator'),
-                cell: ({ row }) => (
-                    <DisplayName
-                        userid={row.original?.$location?.userId}
-                        location={row.original?.$location?.tag}
-                    />
-                )
+                cell: ({ row }) =>
+                    isResoniteRow(row.original) ? (
+                        <span>-</span>
+                    ) : (
+                        <DisplayName
+                            userid={row.original?.$location?.userId}
+                            location={row.original?.$location?.tag}
+                        />
+                    )
             },
             timeColumn(),
             actionsColumn({
@@ -183,26 +222,35 @@ export const createPreviousInstancesColumns = (variant, config) => {
                 meta: {
                     stretch: true
                 },
-                cell: ({ row }) => (
-                    <LocationWorld
-                        locationobject={row.original?.$location}
-                        grouphint={row.original?.groupName}
-                        currentuserid={config.currentUserId}
-                    />
-                )
+                cell: ({ row }) =>
+                    isResoniteRow(row.original) ? (
+                        createResoniteLocationCell(
+                            row.original,
+                            config.onShowInfo
+                        )
+                    ) : (
+                        <LocationWorld
+                            locationobject={row.original?.$location}
+                            grouphint={row.original?.groupName}
+                            currentuserid={config.currentUserId}
+                        />
+                    )
             },
             {
                 id: 'creator',
                 accessorFn: (row) => row?.$location?.userId ?? '',
                 size: 170,
                 header: () => t('table.previous_instances.instance_creator'),
-                cell: ({ row }) => (
-                    <DisplayName
-                        userid={row.original?.$location?.userId}
-                        location={row.original?.$location?.tag}
-                        forceUpdateKey={config.forceUpdateKey}
-                    />
-                )
+                cell: ({ row }) =>
+                    isResoniteRow(row.original) ? (
+                        <span>-</span>
+                    ) : (
+                        <DisplayName
+                            userid={row.original?.$location?.userId}
+                            location={row.original?.$location?.tag}
+                            forceUpdateKey={config.forceUpdateKey}
+                        />
+                    )
             },
             timeColumn(),
             actionsColumn({
@@ -223,15 +271,19 @@ export const createPreviousInstancesColumns = (variant, config) => {
             meta: {
                 stretch: true
             },
-            cell: ({ row }) => (
-                <Location
-                    location={
-                        row.original?.$location?.tag ?? row.original?.location
-                    }
-                    grouphint={row.original?.groupName}
-                    hint={row.original?.worldName}
-                />
-            )
+            cell: ({ row }) =>
+                isResoniteRow(row.original) ? (
+                    createResoniteLocationCell(row.original, config.onShowInfo)
+                ) : (
+                    <Location
+                        location={
+                            row.original?.$location?.tag ??
+                            row.original?.location
+                        }
+                        grouphint={row.original?.groupName}
+                        hint={row.original?.worldName}
+                    />
+                )
         },
         timeColumn(),
         actionsColumn({

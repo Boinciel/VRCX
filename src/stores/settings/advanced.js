@@ -55,6 +55,10 @@ export const useAdvancedSettingsStore = defineStore('AdvancedSettings', () => {
     );
     const translationApiModel = ref('gpt-4o-mini');
     const translationApiPrompt = ref('');
+    const resoniteIntegration = ref(false);
+    const resoniteFriendsEndpoint = ref('');
+    const resoniteApiKey = ref('');
+    const resoniteRefreshSeconds = ref(300);
     const progressPie = ref(false);
     const progressPieFilter = ref(true);
     const showConfirmationOnSwitchAvatar = ref(false);
@@ -107,6 +111,10 @@ export const useAdvancedSettingsStore = defineStore('AdvancedSettings', () => {
             translationApiEndpointConfig,
             translationApiModelConfig,
             translationApiPromptConfig,
+            resoniteIntegrationConfig,
+            resoniteFriendsEndpointConfig,
+            resoniteApiKeyConfig,
+            resoniteRefreshSecondsConfig,
             progressPieConfig,
             progressPieFilterConfig,
             showConfirmationOnSwitchAvatarConfig,
@@ -153,6 +161,10 @@ export const useAdvancedSettingsStore = defineStore('AdvancedSettings', () => {
             configRepository.getString('VRCX_translationAPIEndpoint', ''),
             configRepository.getString('VRCX_translationAPIModel', ''),
             configRepository.getString('VRCX_translationAPIPrompt', ''),
+            configRepository.getBool('VRCX_resoniteIntegration', false),
+            configRepository.getString('VRCX_resoniteFriendsEndpoint', ''),
+            configRepository.getString('VRCX_resoniteApiKey', ''),
+            configRepository.getFloat('VRCX_resoniteRefreshSeconds', 300),
             configRepository.getBool('VRCX_progressPie', false),
             configRepository.getBool('VRCX_progressPieFilter', true),
             configRepository.getBool(
@@ -202,6 +214,10 @@ export const useAdvancedSettingsStore = defineStore('AdvancedSettings', () => {
         translationApiEndpoint.value = translationApiEndpointConfig;
         translationApiModel.value = translationApiModelConfig;
         translationApiPrompt.value = translationApiPromptConfig;
+        resoniteIntegration.value = resoniteIntegrationConfig;
+        resoniteFriendsEndpoint.value = resoniteFriendsEndpointConfig;
+        resoniteApiKey.value = resoniteApiKeyConfig;
+        resoniteRefreshSeconds.value = resoniteRefreshSecondsConfig;
         progressPie.value = progressPieConfig;
         progressPieFilter.value = progressPieFilterConfig;
         showConfirmationOnSwitchAvatar.value =
@@ -402,6 +418,50 @@ export const useAdvancedSettingsStore = defineStore('AdvancedSettings', () => {
         await configRepository.setString(
             'VRCX_translationAPIPrompt',
             translationApiPrompt.value
+        );
+    }
+
+    /**
+     * @param {boolean} value
+     */
+    async function setResoniteIntegration(value) {
+        resoniteIntegration.value = value;
+        await configRepository.setBool(
+            'VRCX_resoniteIntegration',
+            resoniteIntegration.value
+        );
+    }
+
+    /**
+     * @param {string} value
+     */
+    async function setResoniteFriendsEndpoint(value) {
+        resoniteFriendsEndpoint.value = value;
+        await configRepository.setString(
+            'VRCX_resoniteFriendsEndpoint',
+            resoniteFriendsEndpoint.value
+        );
+    }
+
+    /**
+     * @param {string} value
+     */
+    async function setResoniteApiKey(value) {
+        resoniteApiKey.value = value;
+        await configRepository.setString(
+            'VRCX_resoniteApiKey',
+            resoniteApiKey.value
+        );
+    }
+
+    /**
+     * @param {number} value
+     */
+    async function setResoniteRefreshSeconds(value) {
+        resoniteRefreshSeconds.value = value;
+        await configRepository.setFloat(
+            'VRCX_resoniteRefreshSeconds',
+            resoniteRefreshSeconds.value
         );
     }
 
@@ -1122,6 +1182,10 @@ export const useAdvancedSettingsStore = defineStore('AdvancedSettings', () => {
         translationApiEndpoint,
         translationApiModel,
         translationApiPrompt,
+        resoniteIntegration,
+        resoniteFriendsEndpoint,
+        resoniteApiKey,
+        resoniteRefreshSeconds,
         progressPie,
         progressPieFilter,
         showConfirmationOnSwitchAvatar,
@@ -1164,6 +1228,10 @@ export const useAdvancedSettingsStore = defineStore('AdvancedSettings', () => {
         setTranslationApiEndpoint,
         setTranslationApiModel,
         setTranslationApiPrompt,
+        setResoniteIntegration,
+        setResoniteFriendsEndpoint,
+        setResoniteApiKey,
+        setResoniteRefreshSeconds,
         setProgressPie,
         setProgressPieFilter,
         setShowConfirmationOnSwitchAvatar,

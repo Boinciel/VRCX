@@ -131,6 +131,10 @@
                                 </ContextMenu>
                             </template>
 
+                            <template v-else-if="item.row.type === 'meResoniteItem'">
+                                <FriendItem :friend="item.row.friend" />
+                            </template>
+
                             <template v-else-if="item.row.type === 'instance-header'">
                                 <div class="mb-1 flex items-center">
                                     <Location class="inline text-xs" :location="item.row.location" />
@@ -148,7 +152,7 @@
                                     </ContextMenuTrigger>
                                     <ContextMenuContent>
                                         <ContextMenuItem
-                                            v-if="item.row.friend.state === 'online'"
+                                            v-if="item.row.friend.state === 'online' && !item.row.friend.isExternal"
                                             @click="friendRequestInvite(item.row.friend)">
                                             {{ t('dialog.user.actions.request_invite') }}
                                             <ContextMenuShortcut
@@ -157,7 +161,7 @@
                                             </ContextMenuShortcut>
                                         </ContextMenuItem>
                                         <ContextMenuItem
-                                            v-if="isGameRunning"
+                                            v-if="isGameRunning && !item.row.friend.isExternal"
                                             :disabled="!canInviteToMyLocation"
                                             @click="friendInvite(item.row.friend)">
                                             {{ t('dialog.user.actions.invite') }}
@@ -166,17 +170,22 @@
                                             </ContextMenuShortcut>
                                         </ContextMenuItem>
                                         <ContextMenuItem
+                                            v-if="!item.row.friend.isExternal"
                                             :disabled="!currentUser.isBoopingEnabled"
                                             @click="friendSendBoop(item.row.friend)">
                                             {{ t('dialog.user.actions.send_boop') }}
                                         </ContextMenuItem>
                                         <ContextMenuSeparator
                                             v-if="
-                                                item.row.friend.state === 'online' && hasFriendLocation(item.row.friend)
+                                                item.row.friend.state === 'online' &&
+                                                hasFriendLocation(item.row.friend) &&
+                                                !item.row.friend.isExternal
                                             " />
                                         <ContextMenuItem
                                             v-if="
-                                                item.row.friend.state === 'online' && hasFriendLocation(item.row.friend)
+                                                item.row.friend.state === 'online' &&
+                                                hasFriendLocation(item.row.friend) &&
+                                                !item.row.friend.isExternal
                                             "
                                             :disabled="!canJoinFriend(item.row.friend)"
                                             @click="friendJoin(item.row.friend)">
@@ -184,7 +193,9 @@
                                         </ContextMenuItem>
                                         <ContextMenuItem
                                             v-if="
-                                                item.row.friend.state === 'online' && hasFriendLocation(item.row.friend)
+                                                item.row.friend.state === 'online' &&
+                                                hasFriendLocation(item.row.friend) &&
+                                                !item.row.friend.isExternal
                                             "
                                             :disabled="!canJoinFriend(item.row.friend)"
                                             @click="friendInviteSelf(item.row.friend)">
@@ -284,6 +295,53 @@
     const { userImage, userStatusClass } = useUserDisplay();
     const { presets: statusPresets, getStatusClass: presetStatusClass } = useStatusPresets();
 
+    const meResoniteRow = computed(() => {
+        const presence = currentUser.value?.$resonitePresence;
+        if (!presence?.isActive) return null;
+
+        const rawLinkedUserId = String(presence.linkedUserId || '').trim();
+        const resoniteId = rawLinkedUserId
+            ? rawLinkedUserId.startsWith('resonite:')
+                ? rawLinkedUserId
+                : `resonite:${rawLinkedUserId}`
+            : 'resonite:me';
+        const displayName = String(presence.linkedDisplayName || presence.linkedUserId || 'Resonite').trim();
+        const avatarUrl = String(presence.avatarUrl || '').trim();
+        const locationName = String(presence.locationName || '').trim();
+        const statusDescription = String(presence.statusDescription || '').trim();
+        const resoniteFriend = {
+            id: resoniteId,
+            provider: 'resonite',
+            isExternal: true,
+            isFriend: true,
+            pendingOffline: false,
+            state: presence.state || 'online',
+            ref: {
+                id: resoniteId,
+                displayName,
+                isFriend: true,
+                state: presence.state || 'online',
+                status: presence.status || 'active',
+                statusDescription,
+                location: locationName,
+                traveling: '',
+                resonite: {
+                    currentSessionHash: String(presence.currentSessionHash || '').trim(),
+                    currentSessionName: String(presence.currentSessionName || '').trim()
+                },
+                userIcon: avatarUrl,
+                profilePicOverrideThumbnail: avatarUrl,
+                profilePicOverride: avatarUrl
+            }
+        };
+
+        return {
+            type: 'meResoniteItem',
+            key: `meResonite:${rawLinkedUserId || 'resonite'}`,
+            friend: resoniteFriend
+        };
+    });
+
     const isFriendsGroupMe = ref(true);
     const isVIPFriends = ref(true);
     const isOnlineFriends = ref(true);
@@ -299,7 +357,10 @@
         const ids = new Set();
         for (const item of friendsInSameInstance.value) {
             for (const friend of item) {
-                if (isRealInstance(friend.ref?.$location.tag) || lastLocation.value.friendList.has(friend.id)) {
+                if (
+                    isRealInstance(friend.ref?.$location?.tag) ||
+                    Boolean(lastLocation.value?.friendList?.has(friend.id))
+                ) {
                     ids.add(friend.id);
                 }
             }
@@ -529,6 +590,10 @@
 
         if (isFriendsGroupMe.value) {
             rows.push({ type: 'me-item', key: `me:${currentUser.value?.id ?? 'me'}` });
+            const resoniteRow = meResoniteRow.value;
+            if (resoniteRow) {
+                rows.push(resoniteRow);
+            }
         }
 
         if (isSameInstanceAboveFavorites.value) {

@@ -3,6 +3,7 @@ import { defineStore } from 'pinia';
 
 import { database } from '../services/database';
 import { useFriendStore } from './friend';
+import { useUserStore } from './user';
 import { useVrcxStore } from './vrcx';
 import { watchState } from '../services/watchState';
 
@@ -10,6 +11,7 @@ import configRepository from '../services/config';
 
 export const useFeedStore = defineStore('Feed', () => {
     const friendStore = useFriendStore();
+    const userStore = useUserStore();
     const vrcxStore = useVrcxStore();
 
     const feedTableData = shallowRef([]);
@@ -55,6 +57,32 @@ export const useFeedStore = defineStore('Feed', () => {
     }
 
     init();
+
+    function getHiddenResoniteSelfIds() {
+        const presence = userStore.currentUser?.$resonitePresence;
+        const ids = new Set();
+
+        const linkedContactId = String(presence?.linkedContactId || '').trim();
+        if (linkedContactId) {
+            ids.add(linkedContactId);
+        }
+
+        const linkedUserId = String(presence?.linkedUserId || '').trim();
+        if (linkedUserId) {
+            ids.add(`resonite:${linkedUserId}`);
+        }
+
+        return ids;
+    }
+
+    function shouldHideFeedEntry(feed) {
+        const userId = String(feed?.userId || '').trim();
+        if (!userId) {
+            return false;
+        }
+
+        return getHiddenResoniteSelfIds().has(userId);
+    }
 
     function feedSearch(row) {
         const value = feedTable.value.search.trim().toUpperCase();
@@ -160,7 +188,10 @@ export const useFeedStore = defineStore('Feed', () => {
                           vipList
                       );
             feedTableData.value = [];
-            feedTableData.value = [...feedTableData.value, ...rows];
+            feedTableData.value = [
+                ...feedTableData.value,
+                ...rows.filter((row) => !shouldHideFeedEntry(row))
+            ];
         } finally {
             feedTable.value.loading = false;
         }
@@ -172,6 +203,9 @@ export const useFeedStore = defineStore('Feed', () => {
      * @param {object} feed The feed entry to add.
      */
     function addFeedEntry(feed) {
+        if (shouldHideFeedEntry(feed)) {
+            return;
+        }
         if (
             feedTable.value.filter.length > 0 &&
             !feedTable.value.filter.includes(feed.type)

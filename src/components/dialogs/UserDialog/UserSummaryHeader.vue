@@ -57,8 +57,8 @@
                     <span
                         class="font-bold"
                         style="margin-left: 6px; margin-right: 6px; cursor: pointer"
-                        v-text="userDialog.ref.displayName"
-                        @click="copyUserDisplayName(userDialog.ref.displayName)"></span>
+                        v-text="resolvedDisplayName"
+                        @click="copyUserDisplayName(resolvedDisplayName)"></span>
                     <TooltipWrapper v-if="userDialog.ref.pronouns" side="top" :content="t('dialog.user.pronouns')">
                         <span
                             class="x-grey font-mono text-xs"
@@ -84,9 +84,23 @@
                     </template>
                 </div>
                 <div class="mt-2 flex items-center gap-1" v-show="!userDialog.loading">
-                    <TooltipWrapper side="top" :content="t('dialog.user.tags.trust_level')">
+                    <TooltipWrapper v-if="!isExternalUser" side="top" :content="t('dialog.user.tags.trust_level')">
                         <Badge variant="outline" class="name" :class="userDialog.ref.$trustClass">
                             <Shield class="h-4 w-4" /> {{ userDialog.ref.$trustLevel }}
+                        </Badge>
+                    </TooltipWrapper>
+                    <TooltipWrapper v-if="isExternalUser" side="top" content="Resonite">
+                        <Badge variant="outline" class="border-green-400! text-green-400">
+                            <span class="provider-badge-icon provider-badge-icon--resonite"></span>
+                            Resonite
+                        </Badge>
+                    </TooltipWrapper>
+                    <TooltipWrapper
+                        v-if="isExternalUser && resoniteProfile?.isVerified"
+                        side="top"
+                        content="Verified on Resonite">
+                        <Badge variant="outline" class="text-[#3b82f6] border-[#3b82f6]!">
+                            <IdCard class="h-4 w-4" /> Verified
                         </Badge>
                     </TooltipWrapper>
                     <TooltipWrapper
@@ -103,7 +117,7 @@
                         </Badge>
                     </TooltipWrapper>
                     <TooltipWrapper
-                        v-if="userDialog.isFriend && userDialog.friend"
+                        v-if="userDialog.isFriend && userDialog.friend && userDialog.ref.$friendNumber"
                         side="top"
                         :content="t('dialog.user.tags.friend_number')">
                         <Badge variant="outline" class="text-amber-400 border-amber-400!">
@@ -141,6 +155,23 @@
                     <Badge v-if="userDialog.ref.$isModerator" variant="outline" class="x-tag-vip">
                         {{ t('dialog.user.tags.vrchat_team') }}
                     </Badge>
+
+                    <TooltipWrapper
+                        v-if="isExternalUser && resoniteClientBadge"
+                        side="top"
+                        :content="resoniteClientBadge.tooltip">
+                        <Badge variant="outline" :class="resoniteClientBadge.className">
+                            <span
+                                v-if="resoniteClientBadge.iconMaskClass"
+                                :class="['provider-badge-icon', resoniteClientBadge.iconMaskClass]"></span>
+                            <component
+                                v-else-if="resoniteClientBadge.iconComponent"
+                                :is="resoniteClientBadge.iconComponent"
+                                class="m-0.5" />
+                            <i v-else :class="[resoniteClientBadge.iconClass, 'text-xs']"></i>
+                            {{ resoniteClientBadge.label }}
+                        </Badge>
+                    </TooltipWrapper>
 
                     <TooltipWrapper v-if="userDialog.ref.$platform === 'standalonewindows'" side="top" content="PC">
                         <Badge variant="outline" class="text-platform-pc border-platform-pc!">
@@ -235,7 +266,8 @@
                     </TooltipWrapper>
                 </div>
                 <div>
-                    <span class="text-xs" v-text="userDialog.ref.statusDescription"></span>
+                    <span v-if="isExternalUser" class="text-xs" v-html="renderedStatusDescription"></span>
+                    <span v-else class="text-xs" v-text="userDialog.ref.statusDescription"></span>
                 </div>
             </div>
 
@@ -256,7 +288,7 @@
                 </div>
             </div>
 
-            <UserActionDropdown class="ml-2 mt-12" :user-dialog-command="userDialogCommand" />
+            <UserActionDropdown v-if="!isExternalUser" class="ml-2 mt-12" :user-dialog-command="userDialogCommand" />
         </div>
     </div>
 </template>
@@ -268,6 +300,7 @@
     import { useI18n } from 'vue-i18n';
 
     import { formatDateFilter, languageClass, openDiscordProfile } from '../../../shared/utils';
+    import { renderResoniteRichText } from '../../../shared/utils/resoniteRichText';
     import { useUserDisplay } from '../../../composables/useUserDisplay';
     import { Popover, PopoverContent, PopoverTrigger } from '../../ui/popover';
     import { useGalleryStore, useUserStore } from '../../../stores';
@@ -309,6 +342,80 @@
 
     const profileImageError = ref(false);
     const userIconError = ref(false);
+    const isExternalUser = computed(
+        () =>
+            userDialog.value.isExternal ||
+            String(userDialog.value.id || userDialog.value.ref?.id || '').startsWith('resonite:')
+    );
+    const resoniteProfile = computed(() => userDialog.value.ref?.resonite || {});
+    const resolvedDisplayName = computed(() => {
+        const dialogId = firstNonEmptyString(userDialog.value.id, userDialog.value.ref?.id);
+        const rawDisplayName = firstNonEmptyString(userDialog.value.ref?.displayName);
+        const resoniteUserId = firstNonEmptyString(resoniteProfile.value?.userId);
+        const resoniteUsername = firstNonEmptyString(resoniteProfile.value?.username);
+
+        if (!isExternalUser.value) {
+            return firstNonEmptyString(rawDisplayName, dialogId);
+        }
+
+        if (rawDisplayName && rawDisplayName !== dialogId && rawDisplayName !== resoniteUserId) {
+            return rawDisplayName;
+        }
+
+        return firstNonEmptyString(resoniteUsername, rawDisplayName, resoniteUserId, dialogId);
+    });
+    const renderedStatusDescription = computed(() =>
+        renderResoniteRichText(String(userDialog.value.ref?.statusDescription || '').trim())
+    );
+    const resoniteClientBadge = computed(() => {
+        if (!isExternalUser.value) {
+            return null;
+        }
+
+        const outputDevice = firstNonEmptyString(
+            resoniteProfile.value?.realtime?.outputDevice,
+            resoniteProfile.value?.outputDevice
+        );
+        const appVersion = firstNonEmptyString(
+            resoniteProfile.value?.realtime?.appVersion,
+            resoniteProfile.value?.appVersion
+        );
+        const statusDescription = firstNonEmptyString(userDialog.value.ref?.statusDescription);
+        const hint = `${outputDevice} ${statusDescription}`.trim().toLowerCase();
+
+        let label = '';
+        let className = 'text-muted-foreground';
+        let iconClass = '';
+        let iconComponent = null;
+        let iconMaskClass = '';
+
+        if (hint.includes('of recon')) {
+            label = 'ReCon';
+            className = 'border-sky-400! text-sky-400';
+            iconMaskClass = 'provider-badge-icon--recon';
+        } else if (hint.includes(' of vr') || hint.endsWith(' vr')) {
+            label = 'VR';
+            className = 'border-emerald-400! text-emerald-400';
+            iconComponent = Monitor;
+        } else if (hint.includes(' of screen') || hint.includes('screen')) {
+            label = 'PC';
+            className = 'border-platform-pc! text-platform-pc';
+            iconComponent = Monitor;
+        }
+
+        if (!label) {
+            return null;
+        }
+
+        return {
+            label,
+            className,
+            iconClass,
+            iconComponent,
+            iconMaskClass,
+            tooltip: [label, appVersion].filter(Boolean).join(' · ')
+        };
+    });
 
     watch(
         () => userDialog.value.id,
@@ -323,4 +430,41 @@
     const toggleBadgeVisibility = props.toggleBadgeVisibility;
     const toggleBadgeShowcased = props.toggleBadgeShowcased;
     const userDialogCommand = props.userDialogCommand;
+
+    function firstNonEmptyString(...values) {
+        for (const value of values) {
+            const normalized = String(value || '').trim();
+            if (normalized) {
+                return normalized;
+            }
+        }
+
+        return '';
+    }
 </script>
+
+<style scoped>
+    .provider-badge-icon {
+        display: inline-block;
+        width: 0.875rem;
+        height: 0.875rem;
+        flex: none;
+        background-color: currentColor;
+        mask-position: center;
+        mask-repeat: no-repeat;
+        mask-size: contain;
+        -webkit-mask-position: center;
+        -webkit-mask-repeat: no-repeat;
+        -webkit-mask-size: contain;
+    }
+
+    .provider-badge-icon--resonite {
+        mask-image: url(/images/icons/resonite.svg);
+        -webkit-mask-image: url(/images/icons/resonite.svg);
+    }
+
+    .provider-badge-icon--recon {
+        mask-image: url(/images/icons/recon.svg);
+        -webkit-mask-image: url(/images/icons/recon.svg);
+    }
+</style>

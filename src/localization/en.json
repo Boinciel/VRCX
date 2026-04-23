@@ -758,7 +758,13 @@
                 }
             },
             "integrations": {
-                "header": "Integrations"
+                "header": "Integrations",
+                "resonite": {
+                    "header": "Resonite Integration",
+                    "enable": "Enable Resonite Integration",
+                    "enable_tooltip": "Show Resonite friends alongside VRChat friends",
+                    "configure": "Configure"
+                }
             },
             "advanced_groups": {
                 "system": {
@@ -2207,6 +2213,36 @@
             "description": "Enter your YouTube API Key (optional)",
             "placeholder": "YouTube API Key",
             "guide": "Guide",
+            "save": "Save"
+        },
+        "resonite_integration": {
+            "header": "Resonite Integration",
+            "description": "Configure your Resonite friends API endpoint to show Resonite friends in the friends list.",
+            "login_section": "Sign in to Resonite to generate your API key automatically",
+            "username": "Resonite Username",
+            "username_placeholder": "Enter your Resonite username",
+            "password": "Resonite Password",
+            "password_placeholder": "Enter your Resonite password",
+            "totp": "2FA Code (Optional)",
+            "totp_placeholder": "123456",
+            "login_generate_key": "Sign In and Generate API Key",
+            "login_in_progress": "Signing in...",
+            "endpoint": "API Endpoint",
+            "endpoint_placeholder": "https://your-resonite-api.example.com/friends",
+            "api_key": "API Key (Optional)",
+            "api_key_placeholder": "U-xxxx:token or Bearer token",
+            "refresh_interval": "Refresh Interval",
+            "error_credentials_required": "Username and password are required",
+            "error_invalid_credentials": "Invalid Resonite login credentials",
+            "error_login_failed": "Failed to authenticate with Resonite API",
+            "error_endpoint_required": "API endpoint is required",
+            "error_invalid_url": "Please enter a valid URL",
+            "error_invalid_refresh_interval": "Refresh interval must be between 30 and 3600 seconds",
+            "saved": "Resonite integration settings saved",
+            "login_saved": "Resonite login successful and settings saved"
+        },
+        "button": {
+            "cancel": "Cancel",
             "save": "Save"
         },
         "translation_api": {

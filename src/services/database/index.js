@@ -10,6 +10,7 @@ import { memos } from './memos.js';
 import { moderation } from './moderation.js';
 import { mutualGraph } from './mutualGraph.js';
 import { notifications } from './notifications.js';
+import { resoniteCache } from './resoniteCache.js';
 import { tableAlter } from './tableAlter.js';
 import { tableFixes } from './tableFixes.js';
 import { tableSize } from './tableSize.js';
@@ -29,6 +30,7 @@ const database = {
     ...activityV2,
     ...gameLog,
     ...notifications,
+    ...resoniteCache,
     ...moderation,
     ...friendLogHistory,
     ...friendLogCurrent,
@@ -150,6 +152,7 @@ const database = {
         await sqliteService.executeNonQuery(
             `CREATE TABLE IF NOT EXISTS ${dbVars.userPrefix}_mutual_graph_meta (friend_id TEXT PRIMARY KEY, last_fetched_at TEXT, opted_out INTEGER DEFAULT 0)`
         );
+        await this.initResoniteCacheTables();
     },
 
     async initTables() {

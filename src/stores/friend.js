@@ -25,10 +25,26 @@ import {
 import { applyUser } from '../coordinators/userCoordinator';
 import { AppDebug } from '../services/appConfig';
 import { database } from '../services/database';
+import { buildResonitePresenceFeedUpdate } from '../services/resoniteFeedEvents';
+import { fetchResoniteFriends } from '../services/resoniteFriends';
+import {
+    clearResoniteRealtimeState,
+    ensureResoniteRealtimePresence,
+    hydratePersistedResoniteRealtimeState,
+    mergeResoniteRealtimePresence,
+    setResoniteRealtimePresenceListener,
+    stopResoniteRealtimePresence
+} from '../services/resoniteRealtime';
 import { useAppearanceSettingsStore } from './settings/appearance';
+import { useAdvancedSettingsStore } from './settings/advanced';
 import { useFavoriteStore } from './favorite';
+import { useFeedStore } from './feed';
 import { useGeneralSettingsStore } from './settings/general';
 import { useGroupStore } from './group';
+import { useNotificationStore } from './notification';
+import { useResoniteCredentialsStore } from './resoniteCredentials';
+import { useSharedFeedStore } from './sharedFeed';
+import { useUiStore } from './ui';
 import { useLocationStore } from './location';
 import { useUserStore } from './user';
 import { watchState } from '../services/watchState';
@@ -38,11 +54,20 @@ import configRepository from '../services/config';
 import * as workerTimers from 'worker-timers';
 
 export const useFriendStore = defineStore('Friend', () => {
+    const RESONITE_SNAPSHOT_CACHE_VERSION = 1;
+    const RESONITE_SNAPSHOT_CACHE_MAX_AGE_MS = 1000 * 60 * 60 * 12;
+    const RESONITE_SNAPSHOT_CACHE_MAX_FRIENDS = 300;
+
     const appearanceSettingsStore = useAppearanceSettingsStore();
+    const advancedSettingsStore = useAdvancedSettingsStore();
+    const feedStore = useFeedStore();
     const generalSettingsStore = useGeneralSettingsStore();
     const userStore = useUserStore();
     const groupStore = useGroupStore();
     const locationStore = useLocationStore();
+    const notificationStore = useNotificationStore();
+    const sharedFeedStore = useSharedFeedStore();
+    const uiStore = useUiStore();
 
     const router = useRouter();
     const t = i18n.global.t;
@@ -54,6 +79,10 @@ export const useFriendStore = defineStore('Friend', () => {
     const friendLog = new Map();
 
     const friends = reactive(new Map());
+    const lastResoniteFriendsSnapshot = shallowRef([]);
+    let lastResonitePersistenceUserId = '';
+    let persistResoniteSnapshotTimer = null;
+    let resoniteSelfFeedSnapshot = null;
 
     const localFavoriteFriends = reactive(new Set());
     const sortedFriends = shallowRef([]);
@@ -103,6 +132,15 @@ export const useFriendStore = defineStore('Friend', () => {
         if (AppDebug.debugRecompute) {
             console.log('[friendStore derived] counters reset');
         }
+    }
+
+    function isVrchatMutualEligibleFriend(ctx) {
+        const id = String(ctx?.id || '').trim();
+        return Boolean(
+            id.startsWith('usr_') &&
+            ctx?.isExternal !== true &&
+            ctx?.provider !== 'resonite'
+        );
     }
 
     /**
@@ -343,12 +381,16 @@ export const useFriendStore = defineStore('Friend', () => {
                 return;
             }
 
-            let locationTag = friend.ref.$location.tag;
+            let locationTag = friend.ref?.$location?.tag;
+            if (!locationTag) {
+                return;
+            }
             if (
-                !friend.ref.$location.isRealInstance &&
-                locationStore.lastLocation.friendList.has(friend.id)
+                !friend.ref?.$location?.isRealInstance &&
+                locationStore.lastLocation?.friendList?.has(friend.id)
             ) {
-                locationTag = locationStore.lastLocation.location;
+                locationTag =
+                    locationStore.lastLocation?.location || locationTag;
             }
             const isReal = isRealInstance(locationTag);
             if (!isReal) {
@@ -394,7 +436,64 @@ export const useFriendStore = defineStore('Friend', () => {
                     workerTimers.clearInterval(pendingOfflineWorker);
                     pendingOfflineWorker = null;
                 }
+
+                stopResoniteRealtimePresence().catch((error) => {
+                    console.warn(
+                        '[ResoniteIntegration] Failed to stop realtime presence on logout:',
+                        error
+                    );
+                });
             }
+        },
+        { flush: 'sync' }
+    );
+
+    watch(
+        () => advancedSettingsStore.resoniteIntegration,
+        (enabled) => {
+            if (enabled) {
+                return;
+            }
+
+            void clearResoniteState({
+                clearPersisted: false,
+                stopRealtime: true
+            }).catch((error) => {
+                console.warn(
+                    '[ResoniteIntegration] Failed to clear Resonite state after disabling integration:',
+                    error
+                );
+            });
+        },
+        { flush: 'sync' }
+    );
+
+    watch(
+        () =>
+            parseResoniteUserIdFromApiKey(advancedSettingsStore.resoniteApiKey),
+        (nextUserId, previousUserId) => {
+            if (!watchState.isLoggedIn) {
+                return;
+            }
+
+            const normalizedPreviousUserId = normalizeHandle(previousUserId);
+            const normalizedNextUserId = normalizeHandle(nextUserId);
+            if (
+                !normalizedPreviousUserId ||
+                normalizedPreviousUserId === normalizedNextUserId
+            ) {
+                return;
+            }
+
+            void clearResoniteState({
+                clearPersisted: true,
+                stopRealtime: true
+            }).catch((error) => {
+                console.warn(
+                    '[ResoniteIntegration] Failed to clear Resonite state after account switch:',
+                    error
+                );
+            });
         },
         { flush: 'sync' }
     );
@@ -529,7 +628,14 @@ export const useFriendStore = defineStore('Friend', () => {
                 }
             }
             for (id of friends.keys()) {
-                if (map.has(id) === false) {
+                const existingCtx = friends.get(id);
+                // Preserve external-provider entries (e.g. Resonite) when
+                // reconciling the VRChat friend snapshot.
+                if (
+                    map.has(id) === false &&
+                    !existingCtx?.isExternal &&
+                    existingCtx?.provider !== 'resonite'
+                ) {
                     deleteFriend(id);
                     removed.push(id);
                 }
@@ -907,13 +1013,15 @@ export const useFriendStore = defineStore('Friend', () => {
         }
         runInSortedFriendsBatch(() => {
             for (const ctx of friends.values()) {
-                if (ctx?.ref) {
+                if (ctx?.ref && isVrchatMutualEligibleFriend(ctx)) {
+                    ctx.ref.$mutualCount = 0;
+                } else if (ctx?.ref) {
                     ctx.ref.$mutualCount = 0;
                 }
             }
             for (const [userId, mutualCount] of mutualCountMap.entries()) {
                 const ref = friends.get(userId);
-                if (ref?.ref) {
+                if (ref?.ref && isVrchatMutualEligibleFriend(ref)) {
                     ref.ref.$mutualCount = mutualCount;
                     reindexSortedFriend(ref);
                 }
@@ -935,13 +1043,15 @@ export const useFriendStore = defineStore('Friend', () => {
         }
         runInSortedFriendsBatch(() => {
             for (const ctx of friends.values()) {
-                if (ctx?.ref) {
+                if (ctx?.ref && isVrchatMutualEligibleFriend(ctx)) {
+                    ctx.ref.$mutualOptedOut = false;
+                } else if (ctx?.ref) {
                     ctx.ref.$mutualOptedOut = false;
                 }
             }
             for (const [userId, meta] of metaMap.entries()) {
                 const ref = friends.get(userId);
-                if (ref?.ref) {
+                if (ref?.ref && isVrchatMutualEligibleFriend(ref)) {
                     ref.ref.$mutualOptedOut = Boolean(meta.optedOut);
                 }
             }
@@ -1402,6 +1512,1497 @@ export const useFriendStore = defineStore('Friend', () => {
         isRefreshFriendsLoading.value = value;
     }
 
+    async function hydratePersistedResoniteState() {
+        const currentUserId = String(userStore.currentUser?.id || '').trim();
+        if (!currentUserId || !advancedSettingsStore.resoniteIntegration) {
+            return false;
+        }
+
+        lastResonitePersistenceUserId = currentUserId;
+
+        try {
+            await hydratePersistedResoniteRealtimeState(
+                getResonitePersistenceScopeKey(currentUserId)
+            );
+
+            const persisted = await configRepository.getObject(
+                getResoniteSnapshotConfigKey(currentUserId)
+            );
+
+            if (!persisted || typeof persisted !== 'object') {
+                return false;
+            }
+
+            const persistedAt = Number(persisted.persistedAt || 0);
+            if (
+                !persistedAt ||
+                Date.now() - persistedAt > RESONITE_SNAPSHOT_CACHE_MAX_AGE_MS
+            ) {
+                return false;
+            }
+
+            const snapshot = Array.isArray(persisted.friends)
+                ? persisted.friends.filter(
+                      (friendData) =>
+                          friendData?.provider === 'resonite' && friendData?.id
+                  )
+                : [];
+
+            if (snapshot.length === 0) {
+                return false;
+            }
+
+            lastResoniteFriendsSnapshot.value = snapshot;
+            const selfContactId =
+                await applyResonitePresenceToCurrentUser(snapshot);
+            const currentResoniteIds = new Set();
+
+            runInSortedFriendsBatch(() => {
+                for (const friendData of snapshot) {
+                    const friendId = String(friendData?.id || '');
+                    if (!friendId) {
+                        continue;
+                    }
+
+                    if (
+                        friendId === selfContactId ||
+                        isResoniteSystemContact(friendData)
+                    ) {
+                        continue;
+                    }
+
+                    currentResoniteIds.add(friendId);
+                    upsertResoniteFriend(friendData);
+                }
+
+                removeStaleResoniteFriends(currentResoniteIds);
+            });
+
+            return true;
+        } catch (error) {
+            console.warn(
+                '[ResoniteIntegration] Failed to hydrate persisted Resonite state:',
+                error
+            );
+            return false;
+        }
+    }
+
+    async function clearResoniteState({
+        clearPersisted = false,
+        stopRealtime = false
+    } = {}) {
+        const currentUserId = String(userStore.currentUser?.id || '').trim();
+        const persistenceUserId =
+            currentUserId || String(lastResonitePersistenceUserId || '').trim();
+        const persistenceScopeKey =
+            getResonitePersistenceScopeKey(persistenceUserId);
+
+        if (persistResoniteSnapshotTimer) {
+            clearTimeout(persistResoniteSnapshotTimer);
+            persistResoniteSnapshotTimer = null;
+        }
+
+        lastResoniteFriendsSnapshot.value = [];
+        if (userStore.currentUser) {
+            userStore.currentUser['$resonitePresence'] = null;
+        }
+        resoniteSelfFeedSnapshot = null;
+
+        const friendIdsToRemove = [];
+        for (const [friendId, friendCtx] of friends) {
+            if (
+                friendCtx?.provider === 'resonite' ||
+                String(friendId).startsWith('resonite:')
+            ) {
+                friendIdsToRemove.push(friendId);
+            }
+        }
+
+        for (const friendId of friendIdsToRemove) {
+            friends.delete(friendId);
+            localFavoriteFriends.delete(friendId);
+        }
+
+        if (friendIdsToRemove.length > 0) {
+            rebuildSortedFriends();
+        }
+
+        try {
+            if (stopRealtime) {
+                await stopResoniteRealtimePresence();
+            }
+
+            if (clearPersisted && persistenceScopeKey) {
+                await clearResoniteRealtimeState(persistenceScopeKey);
+            }
+        } catch (error) {
+            console.warn(
+                '[ResoniteIntegration] Failed to clear realtime state:',
+                error
+            );
+        }
+
+        if (clearPersisted && persistenceUserId) {
+            try {
+                await configRepository.remove(
+                    getResoniteSnapshotConfigKey(persistenceUserId)
+                );
+            } catch (error) {
+                console.warn(
+                    '[ResoniteIntegration] Failed to clear persisted Resonite snapshot:',
+                    error
+                );
+            }
+        }
+
+        if (persistenceUserId) {
+            lastResonitePersistenceUserId = persistenceUserId;
+        }
+
+        return friendIdsToRemove.length;
+    }
+
+    function schedulePersistResoniteState(
+        snapshot = lastResoniteFriendsSnapshot.value
+    ) {
+        const currentUserId = String(userStore.currentUser?.id || '').trim();
+        if (!currentUserId) {
+            return;
+        }
+
+        const payload = buildPersistedResoniteSnapshotPayload(snapshot);
+        if (persistResoniteSnapshotTimer) {
+            clearTimeout(persistResoniteSnapshotTimer);
+        }
+
+        persistResoniteSnapshotTimer = setTimeout(() => {
+            persistResoniteSnapshotTimer = null;
+            void configRepository
+                .setObject(getResoniteSnapshotConfigKey(currentUserId), payload)
+                .catch((error) => {
+                    console.warn(
+                        '[ResoniteIntegration] Failed to persist Resonite snapshot:',
+                        error
+                    );
+                });
+        }, 500);
+    }
+
+    /** @returns {Promise<Object[]>} */
+    async function refreshResoniteFriends() {
+        try {
+            lastResonitePersistenceUserId = String(
+                userStore.currentUser?.id || ''
+            ).trim();
+
+            const persistenceScopeKey = getResonitePersistenceScopeKey(
+                userStore.currentUser?.id
+            );
+
+            if (persistenceScopeKey) {
+                await hydratePersistedResoniteRealtimeState(
+                    persistenceScopeKey
+                );
+            }
+
+            const fetchResult = await fetchResoniteFriends();
+            const fetchSucceeded =
+                Array.isArray(fetchResult) ||
+                (fetchResult?.success === true &&
+                    Array.isArray(fetchResult?.friends));
+            const resoniteFriendsList = Array.isArray(fetchResult)
+                ? fetchResult
+                : Array.isArray(fetchResult?.friends)
+                  ? fetchResult.friends
+                  : [];
+
+            if (!fetchSucceeded) {
+                console.warn(
+                    '[ResoniteIntegration] Resonite friends refresh failed; preserving existing contacts until a successful snapshot arrives'
+                );
+                return [];
+            }
+
+            if (!Array.isArray(resoniteFriendsList)) {
+                console.warn(
+                    '[ResoniteIntegration] fetchResoniteFriends returned non-array'
+                );
+                return [];
+            }
+
+            if (!advancedSettingsStore.resoniteIntegration) {
+                await stopResoniteRealtimePresence();
+            }
+
+            await ensureResoniteRealtimePresence({
+                enabled: advancedSettingsStore.resoniteIntegration,
+                apiKey: advancedSettingsStore.resoniteApiKey,
+                persistenceKey: persistenceScopeKey,
+                contactUserIds: resoniteFriendsList.map((friendData) =>
+                    stripResonitePrefix(friendData?.id)
+                )
+            });
+
+            const enrichedResoniteFriendsList =
+                mergeResoniteRealtimePresence(resoniteFriendsList);
+            lastResoniteFriendsSnapshot.value = enrichedResoniteFriendsList;
+            schedulePersistResoniteState(enrichedResoniteFriendsList);
+
+            setResoniteRealtimePresenceListener(() => {
+                applyRealtimeResonitePresenceUpdates();
+            });
+
+            const selfContactId = await applyResonitePresenceToCurrentUser(
+                enrichedResoniteFriendsList
+            );
+
+            const currentResoniteIds = new Set();
+
+            for (const friendData of enrichedResoniteFriendsList) {
+                const friendId = String(friendData?.id || '');
+                if (!friendId) {
+                    continue;
+                }
+
+                if (
+                    friendId === selfContactId ||
+                    isResoniteSystemContact(friendData)
+                ) {
+                    continue;
+                }
+
+                currentResoniteIds.add(friendId);
+                upsertResoniteFriend(friendData);
+            }
+
+            removeStaleResoniteFriends(currentResoniteIds);
+
+            return enrichedResoniteFriendsList;
+        } catch (error) {
+            console.error(
+                '[ResoniteIntegration] Error refreshing Resonite friends:',
+                error
+            );
+            return [];
+        }
+    }
+
+    async function applyRealtimeResonitePresenceUpdates() {
+        const snapshot = lastResoniteFriendsSnapshot.value;
+        if (!Array.isArray(snapshot) || snapshot.length === 0) {
+            return;
+        }
+
+        try {
+            const enrichedResoniteFriendsList =
+                mergeResoniteRealtimePresence(snapshot);
+            lastResoniteFriendsSnapshot.value = enrichedResoniteFriendsList;
+            schedulePersistResoniteState(enrichedResoniteFriendsList);
+
+            const selfContactId = await applyResonitePresenceToCurrentUser(
+                enrichedResoniteFriendsList
+            );
+
+            const currentResoniteIds = new Set();
+
+            runInSortedFriendsBatch(() => {
+                for (const friendData of enrichedResoniteFriendsList) {
+                    const friendId = String(friendData?.id || '');
+                    if (!friendId) {
+                        continue;
+                    }
+
+                    if (
+                        friendId === selfContactId ||
+                        isResoniteSystemContact(friendData)
+                    ) {
+                        continue;
+                    }
+
+                    currentResoniteIds.add(friendId);
+                    upsertResoniteFriend(friendData);
+                }
+
+                removeStaleResoniteFriends(currentResoniteIds);
+            });
+        } catch (error) {
+            console.warn(
+                '[ResoniteIntegration] Failed to apply realtime presence update to store:',
+                error
+            );
+        }
+    }
+
+    async function applyResonitePresenceToCurrentUser(resoniteFriendsList) {
+        const currentUser = userStore.currentUser;
+        if (!currentUser?.id) {
+            return '';
+        }
+
+        const savedUsername = await getSavedResoniteUsername();
+        const apiKeyUserId = parseResoniteUserIdFromApiKey(
+            advancedSettingsStore.resoniteApiKey
+        );
+
+        console.debug('[ResoniteIntegration] findResoniteSelfContact lookup:', {
+            savedUsername,
+            apiKeyUserId,
+            totalFriends: resoniteFriendsList?.length ?? 0,
+            friendIds: (resoniteFriendsList || []).map((f) => f?.id)
+        });
+
+        const selfContact = findResoniteSelfContact(resoniteFriendsList, {
+            username: savedUsername,
+            userId: apiKeyUserId
+        });
+
+        if (!selfContact) {
+            console.warn(
+                '[ResoniteIntegration] No self-contact found in friends list. $resonitePresence will be null.'
+            );
+            currentUser['$resonitePresence'] = null;
+            resoniteSelfFeedSnapshot = null;
+            return '';
+        }
+
+        persistResoniteSelfPresenceFeedEntries(selfContact);
+
+        const status = mapResoniteStatusToVrchatStatus(
+            selfContact?.ref?.status,
+            selfContact?.state
+        );
+        const avatarUrl = firstNonEmptyString(
+            selfContact?.ref?.profileImageUrl,
+            selfContact?.ref?.userIcon,
+            selfContact?.resonite?.profile?.iconUrl
+        );
+        const statusDescription = firstNonEmptyString(
+            selfContact?.ref?.statusDescription,
+            selfContact?.resonite?.profile?.tagline,
+            selfContact?.resonite?.profile?.description
+        );
+        const rawLocationName = firstNonEmptyString(
+            selfContact?.ref?.traveling,
+            selfContact?.ref?.location,
+            selfContact?.resonite?.locationName
+        );
+        const locationName =
+            selfContact?.state === 'online' && rawLocationName === 'offline'
+                ? ''
+                : rawLocationName;
+
+        const resonitePresencePayload = {
+            isActive: true,
+            source: 'resonite',
+            linkedContactId: String(selfContact?.id || '').trim(),
+            linkedUserId:
+                selfContact?.resonite?.userId ||
+                stripResonitePrefix(selfContact?.id),
+            linkedDisplayName: firstNonEmptyString(
+                selfContact?.name,
+                selfContact?.ref?.displayName
+            ),
+            status,
+            state: selfContact?.state || 'offline',
+            statusDescription,
+            avatarUrl,
+            locationName,
+            currentSessionName: firstNonEmptyString(
+                selfContact?.resonite?.currentSessionName,
+                locationName
+            ),
+            currentSessionHash: String(
+                selfContact?.resonite?.currentSessionHash || ''
+            ).trim(),
+            outputDevice: firstNonEmptyString(
+                selfContact?.resonite?.realtime?.outputDevice,
+                selfContact?.resonite?.outputDevice
+            ),
+            appVersion: firstNonEmptyString(
+                selfContact?.resonite?.realtime?.appVersion,
+                selfContact?.resonite?.appVersion
+            )
+        };
+        currentUser['$resonitePresence'] = resonitePresencePayload;
+
+        console.debug(
+            '[ResoniteIntegration] $resonitePresence applied to currentUser:',
+            JSON.stringify(resonitePresencePayload, null, 2)
+        );
+        console.debug(
+            '[ResoniteIntegration] selfContact snapshot:',
+            JSON.stringify(
+                {
+                    id: selfContact?.id,
+                    name: selfContact?.name,
+                    state: selfContact?.state,
+                    refStatus: selfContact?.ref?.status,
+                    refLocation: selfContact?.ref?.location,
+                    refStatusDescription: selfContact?.ref?.statusDescription,
+                    refProfileImageUrl: selfContact?.ref?.profileImageUrl,
+                    resoniteAppVersion: selfContact?.resonite?.appVersion,
+                    resoniteLocationName: selfContact?.resonite?.locationName,
+                    resoniteOnlineStatus: selfContact?.resonite?.onlineStatus
+                },
+                null,
+                2
+            )
+        );
+
+        return String(selfContact?.id || '');
+    }
+
+    function buildResoniteSelfFeedSnapshot(selfContact) {
+        const contactId = String(selfContact?.id || '').trim();
+        if (!contactId) {
+            return null;
+        }
+
+        const state =
+            String(selfContact?.state || 'offline').trim() || 'offline';
+        const rawLocation = firstNonEmptyString(
+            selfContact?.ref?.traveling,
+            selfContact?.ref?.location,
+            selfContact?.resonite?.locationName,
+            selfContact?.resonite?.currentSessionName
+        );
+        const locationName =
+            state === 'online' && rawLocation === 'offline' ? '' : rawLocation;
+
+        return {
+            id: contactId,
+            name: firstNonEmptyString(
+                selfContact?.name,
+                selfContact?.ref?.displayName,
+                contactId
+            ),
+            state,
+            provider: 'resonite',
+            isExternal: true,
+            ref: {
+                id: contactId,
+                displayName: firstNonEmptyString(
+                    selfContact?.ref?.displayName,
+                    selfContact?.name,
+                    contactId
+                ),
+                state,
+                status: String(selfContact?.ref?.status || '').trim(),
+                statusDescription: String(
+                    selfContact?.ref?.statusDescription || ''
+                ).trim(),
+                location:
+                    locationName || (state === 'offline' ? 'offline' : ''),
+                traveling: locationName || ''
+            },
+            resonite: {
+                userId: firstNonEmptyString(
+                    selfContact?.resonite?.userId,
+                    stripResonitePrefix(contactId)
+                ),
+                locationName,
+                currentSessionName: firstNonEmptyString(
+                    selfContact?.resonite?.currentSessionName,
+                    locationName
+                ),
+                currentSessionHash: String(
+                    selfContact?.resonite?.currentSessionHash || ''
+                ).trim()
+            }
+        };
+    }
+
+    function persistResoniteSelfPresenceFeedEntries(selfContact) {
+        const nextSnapshot = buildResoniteSelfFeedSnapshot(selfContact);
+        if (!nextSnapshot) {
+            resoniteSelfFeedSnapshot = null;
+            return;
+        }
+
+        const { refPatch, feedEntries } = buildResonitePresenceFeedUpdate(
+            resoniteSelfFeedSnapshot,
+            nextSnapshot
+        );
+        nextSnapshot.ref = {
+            ...nextSnapshot.ref,
+            ...refPatch
+        };
+        resoniteSelfFeedSnapshot = nextSnapshot;
+
+        for (const feedEntry of feedEntries) {
+            switch (feedEntry.type) {
+                case 'GPS':
+                    database.addGPSToDatabase(feedEntry);
+                    break;
+                case 'Status':
+                    database.addStatusToDatabase(feedEntry);
+                    break;
+                case 'Online':
+                case 'Offline':
+                    database.addOnlineOfflineToDatabase(feedEntry);
+                    break;
+            }
+        }
+    }
+
+    async function getSavedResoniteUsername() {
+        try {
+            const resoniteCredentialsStore = useResoniteCredentialsStore();
+            const savedCredentials =
+                await resoniteCredentialsStore.getSavedResoniteCredentialsForCurrentUser();
+            return String(savedCredentials?.username || '').trim();
+        } catch (error) {
+            console.warn(
+                '[ResoniteIntegration] Failed to read saved Resonite username for self mapping:',
+                error
+            );
+            return '';
+        }
+    }
+
+    function findResoniteSelfContact(
+        resoniteFriendsList,
+        { username = '', userId = '' }
+    ) {
+        const normalizedUsername = normalizeHandle(username);
+        const normalizedUserId = normalizeHandle(userId);
+
+        for (const friendData of resoniteFriendsList) {
+            const idCandidates = [
+                stripResonitePrefix(friendData?.id),
+                friendData?.resonite?.userId,
+                friendData?.ref?.resonite?.userId
+            ];
+            const nameCandidates = [
+                friendData?.name,
+                friendData?.ref?.displayName,
+                friendData?.ref?.resonite?.username
+            ];
+
+            if (
+                normalizedUserId &&
+                idCandidates.some(
+                    (value) => normalizeHandle(value) === normalizedUserId
+                )
+            ) {
+                return friendData;
+            }
+
+            if (
+                normalizedUsername &&
+                nameCandidates.some(
+                    (value) => normalizeHandle(value) === normalizedUsername
+                )
+            ) {
+                return friendData;
+            }
+        }
+
+        return null;
+    }
+
+    function parseResoniteUserIdFromApiKey(apiKey) {
+        const key = String(apiKey || '').trim();
+        if (!key) {
+            return '';
+        }
+
+        const withoutPrefix = key.toLowerCase().startsWith('res ')
+            ? key.slice(4).trim()
+            : key;
+        const separatorIndex = withoutPrefix.indexOf(':');
+        if (separatorIndex === -1) {
+            return '';
+        }
+
+        return withoutPrefix.slice(0, separatorIndex).trim();
+    }
+
+    function normalizeHandle(value) {
+        return String(value || '')
+            .trim()
+            .toLowerCase();
+    }
+
+    function stripResonitePrefix(id) {
+        const value = String(id || '');
+        return value.startsWith('resonite:')
+            ? value.slice('resonite:'.length)
+            : value;
+    }
+
+    function isResoniteSystemContact(friendData) {
+        const id = normalizeHandle(
+            stripResonitePrefix(friendData?.id || friendData?.resonite?.userId)
+        );
+        const displayName = normalizeHandle(
+            firstNonEmptyString(friendData?.name, friendData?.ref?.displayName)
+        );
+
+        return id === 'u-resonite' || displayName === 'resonite';
+    }
+
+    function firstNonEmptyString(...values) {
+        for (const value of values) {
+            const normalized = String(value || '').trim();
+            if (normalized) {
+                return normalized;
+            }
+        }
+
+        return '';
+    }
+
+    function mapResoniteStatusToVrchatStatus(status, state) {
+        const normalizedStatus = String(status || '')
+            .trim()
+            .toLowerCase();
+        const normalizedState = String(state || '')
+            .trim()
+            .toLowerCase();
+
+        if (
+            normalizedStatus === 'offline' ||
+            normalizedStatus === 'invisible' ||
+            normalizedState === 'offline'
+        ) {
+            return '';
+        }
+
+        if (normalizedStatus === 'join me') {
+            return 'join me';
+        }
+        if (normalizedStatus === 'ask me') {
+            return 'ask me';
+        }
+        if (normalizedStatus === 'active') {
+            return 'active';
+        }
+
+        if (normalizedStatus === 'busy') {
+            return 'busy';
+        }
+        if (normalizedStatus === 'sociable') {
+            return 'join me';
+        }
+        if (normalizedStatus === 'away') {
+            return 'ask me';
+        }
+        return 'active';
+    }
+
+    function applyResoniteFriendUpdate(
+        existingFriend,
+        normalizedIncoming,
+        { emitFeed = true } = {}
+    ) {
+        const { refPatch, feedEntries } = buildResonitePresenceFeedUpdate(
+            existingFriend,
+            normalizedIncoming
+        );
+
+        normalizedIncoming.ref = {
+            ...normalizedIncoming.ref,
+            ...refPatch
+        };
+
+        if (emitFeed) {
+            emitResonitePresenceFeedEntries(feedEntries);
+        }
+
+        if (existingFriend) {
+            existingFriend.state = normalizedIncoming.state;
+            existingFriend.status = normalizedIncoming.status;
+            existingFriend.name = normalizedIncoming.name;
+            existingFriend.ref = normalizedIncoming.ref;
+            existingFriend.resonite = normalizedIncoming.resonite;
+            existingFriend.provider = normalizedIncoming.provider;
+            existingFriend.isExternal = normalizedIncoming.isExternal;
+            existingFriend.pendingOffline = false;
+
+            syncOpenResoniteUserDialog(existingFriend, {
+                refreshStats: feedEntries.length > 0
+            });
+            reindexSortedFriend(existingFriend);
+            return;
+        }
+
+        const ctx = reactive({
+            id: normalizedIncoming.id,
+            state: normalizedIncoming.state || 'offline',
+            status: normalizedIncoming.status || '',
+            isVIP: false,
+            ref: normalizedIncoming.ref,
+            name: normalizedIncoming.name,
+            memo: '',
+            pendingOffline: false,
+            provider: 'resonite',
+            resonite: normalizedIncoming.resonite,
+            isExternal: true,
+            $nickName: ''
+        });
+
+        friends.set(normalizedIncoming.id, ctx);
+        syncOpenResoniteUserDialog(ctx, {
+            refreshStats: feedEntries.length > 0
+        });
+        reindexSortedFriend(ctx);
+    }
+
+    function syncOpenResoniteUserDialog(
+        friendCtx,
+        { refreshStats = false } = {}
+    ) {
+        const dialog = userStore.userDialog;
+        if (!dialog?.visible || !friendCtx?.id) {
+            return;
+        }
+
+        const dialogUserId = String(dialog.id || dialog.ref?.id || '').trim();
+        if (dialogUserId !== String(friendCtx.id).trim()) {
+            return;
+        }
+
+        const previousLocation = String(dialog.ref?.location || '').trim();
+        const avatarUrl = firstNonEmptyString(
+            friendCtx?.ref?.profilePicOverrideThumbnail,
+            friendCtx?.ref?.profilePicOverride,
+            friendCtx?.ref?.profileImageUrl,
+            friendCtx?.ref?.userIcon
+        );
+        const resonite =
+            friendCtx?.resonite || friendCtx?.ref?.resonite
+                ? {
+                      ...(friendCtx?.resonite || {}),
+                      ...(friendCtx?.ref?.resonite || {})
+                  }
+                : undefined;
+
+        Object.assign(dialog.ref, {
+            id: String(friendCtx.id || dialog.ref?.id || '').trim(),
+            displayName: firstNonEmptyString(
+                friendCtx?.ref?.displayName,
+                friendCtx?.name,
+                dialog.ref?.displayName,
+                dialogUserId
+            ),
+            isFriend: true,
+            state: String(friendCtx.state || 'offline').trim() || 'offline',
+            status: firstNonEmptyString(
+                friendCtx?.ref?.status,
+                friendCtx?.status,
+                dialog.ref?.status
+            ),
+            statusDescription: firstNonEmptyString(
+                friendCtx?.ref?.statusDescription,
+                dialog.ref?.statusDescription
+            ),
+            location: String(friendCtx?.ref?.location || '').trim(),
+            travelingToLocation: String(friendCtx?.ref?.traveling || '').trim(),
+            last_activity: firstNonEmptyString(
+                friendCtx?.ref?.last_activity,
+                dialog.ref?.last_activity
+            ),
+            last_login: firstNonEmptyString(
+                friendCtx?.ref?.last_login,
+                dialog.ref?.last_login
+            ),
+            currentAvatarImageUrl: avatarUrl,
+            currentAvatarThumbnailImageUrl: avatarUrl,
+            userIcon: avatarUrl,
+            profilePicOverrideThumbnail: '',
+            profilePicOverride: '',
+            $location_at: Number(
+                friendCtx?.ref?.$location_at || dialog.ref?.$location_at || 0
+            ),
+            $online_for: friendCtx?.ref?.$online_for || '',
+            $travelingToTime: Number(
+                friendCtx?.ref?.$travelingToTime ||
+                    dialog.ref?.$travelingToTime ||
+                    0
+            ),
+            $offline_for:
+                friendCtx?.ref?.$offline_for || dialog.ref?.$offline_for,
+            $active_for: friendCtx?.ref?.$active_for || dialog.ref?.$active_for,
+            $previousLocation: firstNonEmptyString(
+                friendCtx?.ref?.$previousLocation,
+                dialog.ref?.$previousLocation
+            ),
+            resonite
+        });
+
+        dialog.friend = friendCtx;
+        dialog.isFriend = true;
+
+        if (String(dialog.ref?.location || '').trim() !== previousLocation) {
+            userStore.applyUserDialogLocation(true);
+        }
+
+        if (!refreshStats) {
+            return;
+        }
+
+        const requestUserId = dialogUserId;
+        void database.getUserStats(dialog.ref, false).then((stats) => {
+            if (userStore.userDialog.id !== requestUserId) {
+                return;
+            }
+
+            userStore.userDialog.lastSeen = stats.lastSeen;
+            userStore.userDialog.joinCount = stats.joinCount;
+            userStore.userDialog.timeSpent = stats.timeSpent;
+        });
+    }
+
+    function buildResoniteFriendLogCurrent(friendLike) {
+        const userId = String(
+            friendLike?.id || friendLike?.userId || ''
+        ).trim();
+        if (!userId) {
+            return null;
+        }
+
+        return {
+            userId,
+            displayName: String(
+                friendLike?.ref?.displayName ||
+                    friendLike?.displayName ||
+                    friendLike?.name ||
+                    userId
+            ).trim(),
+            trustLevel: '',
+            friendNumber: Number(friendLog.get(userId)?.friendNumber || 0)
+        };
+    }
+
+    function getResoniteFriendLogTimestamp(friendLike) {
+        const fallbackNow = new Date().toJSON();
+        const candidates = [
+            friendLike?.ref?.latestMessageTime,
+            friendLike?.resonite?.latestMessageTime,
+            friendLike?.ref?.resonite?.latestMessageTime
+        ];
+
+        for (const candidate of candidates) {
+            const value = String(candidate || '').trim();
+            if (!value) {
+                continue;
+            }
+
+            const parsed = Date.parse(value);
+            if (Number.isFinite(parsed)) {
+                return new Date(parsed).toJSON();
+            }
+        }
+
+        return fallbackNow;
+    }
+
+    function addResoniteFriendLogHistoryEntry(entry) {
+        friendLogTable.value.data.push(entry);
+        database.addFriendLogHistory(entry);
+        notificationStore.queueFriendLogNoty(entry);
+        sharedFeedStore.addEntry(entry);
+
+        if (
+            entry.type !== 'Unfriend' ||
+            !appearanceSettingsStore.hideUnfriends
+        ) {
+            uiStore.notifyMenu('friend-log');
+        }
+    }
+
+    function syncResoniteFriendLogCurrent(friendLike) {
+        const current = buildResoniteFriendLogCurrent(friendLike);
+        if (!current) {
+            return;
+        }
+
+        const existing = friendLog.get(current.userId);
+        if (
+            existing?.displayName === current.displayName &&
+            existing?.trustLevel === current.trustLevel &&
+            existing?.friendNumber === current.friendNumber
+        ) {
+            return;
+        }
+
+        friendLog.set(current.userId, current);
+        database.setFriendLogCurrent(current);
+    }
+
+    function ensureResoniteFriendshipLogged(friendLike) {
+        if (!isResoniteContactLike(friendLike)) {
+            return;
+        }
+
+        const current = buildResoniteFriendLogCurrent(friendLike);
+        if (!current) {
+            return;
+        }
+
+        if (!friendLog.has(current.userId) && watchState.isFriendsLoaded) {
+            addResoniteFriendLogHistoryEntry({
+                created_at: getResoniteFriendLogTimestamp(friendLike),
+                type: 'Friend',
+                userId: current.userId,
+                displayName: current.displayName,
+                friendNumber: current.friendNumber
+            });
+        }
+
+        syncResoniteFriendLogCurrent(current);
+    }
+
+    function isResoniteContactLike(friendLike) {
+        const resonite =
+            friendLike?.resonite || friendLike?.ref?.resonite || {};
+
+        return Boolean(
+            friendLike?.ref?.contactStatus ||
+            resonite.contactStatus ||
+            friendLike?.ref?.contactUsername ||
+            resonite.contactUsername ||
+            friendLike?.ref?.latestMessageTime ||
+            resonite.latestMessageTime ||
+            friendLike?.ref?.isAccepted !== undefined ||
+            resonite.isAccepted !== undefined
+        );
+    }
+
+    function recordResoniteUnfriendship(friendId, existingFriend) {
+        const userId = String(friendId || '').trim();
+        if (!userId) {
+            return;
+        }
+
+        const current = friendLog.get(userId);
+        if (!current) {
+            return;
+        }
+
+        addResoniteFriendLogHistoryEntry({
+            created_at: new Date().toJSON(),
+            type: 'Unfriend',
+            userId,
+            displayName: String(
+                current.displayName ||
+                    existingFriend?.ref?.displayName ||
+                    existingFriend?.name ||
+                    userId
+            ).trim()
+        });
+
+        friendLog.delete(userId);
+        database.deleteFriendLogCurrent(userId);
+    }
+
+    function queuePendingResoniteOffline(friendId, normalizedIncoming) {
+        const existingFriend = friends.get(friendId);
+        if (!existingFriend) {
+            return;
+        }
+
+        const existingPending = pendingOfflineMap.get(friendId);
+        if (existingPending) {
+            existingPending.payload = normalizedIncoming;
+            existingPending.newState = normalizedIncoming.state || 'offline';
+            return;
+        }
+
+        existingFriend.pendingOffline = true;
+        pendingOfflineMap.set(friendId, {
+            startTime: Date.now(),
+            newState: normalizedIncoming.state || 'offline',
+            payload: normalizedIncoming,
+            previousLocation: existingFriend.ref?.location || 'offline',
+            previousLocationAt: existingFriend.ref?.$location_at
+        });
+        reindexSortedFriend(existingFriend);
+    }
+
+    function flushPendingResoniteOffline(friendId) {
+        const existingPending = pendingOfflineMap.get(friendId);
+        if (!existingPending) {
+            return;
+        }
+
+        pendingOfflineMap.delete(friendId);
+        const existingFriend = friends.get(friendId);
+        if (existingFriend) {
+            existingFriend.pendingOffline = false;
+            reindexSortedFriend(existingFriend);
+        }
+    }
+
+    function commitPendingResoniteUpdate(friendId, normalizedIncoming) {
+        flushPendingResoniteOffline(friendId);
+        applyResoniteFriendUpdate(friends.get(friendId), normalizedIncoming);
+    }
+
+    function emitResonitePresenceFeedEntries(feedEntries) {
+        if (!Array.isArray(feedEntries) || feedEntries.length === 0) {
+            return;
+        }
+
+        for (const feedEntry of feedEntries) {
+            notificationStore.queueFeedNoty(feedEntry);
+            sharedFeedStore.addEntry(feedEntry);
+            feedStore.addFeedEntry(feedEntry);
+
+            switch (feedEntry.type) {
+                case 'GPS':
+                    database.addGPSToDatabase(feedEntry);
+                    break;
+                case 'Status':
+                    database.addStatusToDatabase(feedEntry);
+                    break;
+                case 'Online':
+                case 'Offline':
+                    database.addOnlineOfflineToDatabase(feedEntry);
+                    break;
+            }
+        }
+    }
+
+    /** @param {Object} friendData */
+    function upsertResoniteFriend(friendData, options = {}) {
+        if (!friendData?.id || friendData?.provider !== 'resonite') {
+            console.warn(
+                '[ResoniteIntegration] Invalid friend data for upsert:',
+                friendData
+            );
+            return;
+        }
+
+        const friendId = friendData.id;
+        const normalizedIncoming = normalizeResoniteFriendUpdate(
+            friendData,
+            friends.get(friendId)
+        );
+        const existingFriend = friends.get(friendId);
+        const nextState = String(normalizedIncoming.state || 'offline').trim();
+
+        if (existingFriend?.state === 'online' && nextState === 'offline') {
+            queuePendingResoniteOffline(friendId, normalizedIncoming);
+            return;
+        }
+
+        if (nextState === 'online') {
+            flushPendingResoniteOffline(friendId);
+        }
+
+        applyResoniteFriendUpdate(existingFriend, normalizedIncoming, options);
+        ensureResoniteFriendshipLogged(normalizedIncoming);
+    }
+
+    /** @param {Set<string>} currentResoniteIds */
+    function removeStaleResoniteFriends(currentResoniteIds) {
+        const friendIdsToRemove = [];
+
+        for (const [friendId] of friends) {
+            if (
+                friendId.startsWith('resonite:') &&
+                !currentResoniteIds.has(friendId)
+            ) {
+                friendIdsToRemove.push(friendId);
+            }
+        }
+
+        for (const friendId of friendIdsToRemove) {
+            recordResoniteUnfriendship(friendId, friends.get(friendId));
+            friends.delete(friendId);
+            localFavoriteFriends.delete(friendId);
+        }
+
+        if (friendIdsToRemove.length > 0) {
+            rebuildSortedFriends();
+        }
+    }
+
+    /**
+     * Merge sparse incoming Resonite payloads with an existing friend entry,
+     * preserving last-known world/session fields until better data arrives.
+     *
+     * @param {Object} incoming
+     * @param {Object|undefined} existingCtx
+     * @returns {Object}
+     */
+    function normalizeResoniteFriendUpdate(incoming, existingCtx) {
+        const normalizedIncoming = {
+            ...incoming,
+            ref: {
+                ...(incoming?.ref || {})
+            },
+            resonite: {
+                ...(incoming?.resonite || {})
+            }
+        };
+
+        if (!existingCtx?.ref) {
+            return normalizedIncoming;
+        }
+
+        const existingRef = existingCtx.ref;
+        const existingResonite = existingRef?.resonite || {};
+        const incomingRef = normalizedIncoming.ref;
+        const incomingResonite = normalizedIncoming.resonite;
+
+        if (!normalizedIncoming.name && existingCtx.name) {
+            normalizedIncoming.name = existingCtx.name;
+        }
+
+        if (!incomingRef.displayName && existingRef.displayName) {
+            incomingRef.displayName = existingRef.displayName;
+        }
+
+        incomingRef.last_activity = firstNonEmptyString(
+            incomingRef.last_activity,
+            existingRef.last_activity,
+            incomingResonite.realtime?.lastStatusChange,
+            existingResonite.realtime?.lastStatusChange,
+            incomingResonite.realtime?.lastPresenceTimestamp,
+            existingResonite.realtime?.lastPresenceTimestamp
+        );
+        incomingRef.last_login = firstNonEmptyString(
+            incomingRef.last_login,
+            existingRef.last_login,
+            incomingResonite.realtime?.lastPresenceTimestamp,
+            existingResonite.realtime?.lastPresenceTimestamp,
+            incomingResonite.realtime?.lastStatusChange,
+            existingResonite.realtime?.lastStatusChange
+        );
+
+        const incomingLocation = String(incomingRef.location || '').trim();
+        const incomingTraveling = String(incomingRef.traveling || '').trim();
+        const incomingLocationName = String(
+            incomingResonite.locationName || ''
+        ).trim();
+        const hasIncomingLiveSession =
+            (incomingLocation && incomingLocation !== 'offline') ||
+            incomingTraveling ||
+            incomingLocationName ||
+            String(incomingResonite.currentSessionHash || '').trim() ||
+            String(incomingResonite.currentSessionName || '').trim();
+
+        if (normalizedIncoming.state === 'online') {
+            incomingRef.statusDescription = firstNonEmptyString(
+                incomingRef.statusDescription,
+                existingRef.statusDescription
+            );
+            if (!hasIncomingLiveSession) {
+                incomingRef.location = '';
+                incomingRef.traveling = '';
+                incomingResonite.locationName = '';
+                incomingResonite.currentSessionHash = '';
+                incomingResonite.currentSessionName = '';
+            }
+        } else {
+            incomingRef.location = 'offline';
+            incomingRef.traveling = '';
+            incomingRef.statusDescription = '';
+            incomingRef.status = '';
+            incomingResonite.locationName = '';
+            incomingResonite.currentSessionHash = '';
+            incomingResonite.currentSessionName = '';
+        }
+
+        incomingRef.resonite = {
+            ...existingResonite,
+            ...incomingRef.resonite,
+            ...incomingResonite,
+            realtime: {
+                ...(existingResonite.realtime || {}),
+                ...(incomingRef.resonite?.realtime || {}),
+                ...(incomingResonite.realtime || {})
+            }
+        };
+
+        normalizedIncoming.resonite = incomingRef.resonite;
+        return normalizedIncoming;
+    }
+
+    function getResonitePersistenceScopeKey(currentUserId) {
+        const normalized = String(currentUserId || '')
+            .trim()
+            .toLowerCase();
+        return normalized ? `vrcx-user-${normalized}` : '';
+    }
+
+    function getResoniteSnapshotConfigKey(currentUserId) {
+        const normalized = String(currentUserId || '')
+            .trim()
+            .toLowerCase();
+        return `VRCX_resoniteFriendsSnapshot_${normalized}`;
+    }
+
+    function buildPersistedResoniteSnapshotPayload(snapshot) {
+        const friendsSnapshot = Array.isArray(snapshot)
+            ? snapshot
+                  .map((friendData) =>
+                      sanitizePersistedResoniteFriend(friendData)
+                  )
+                  .filter(Boolean)
+                  .slice(0, RESONITE_SNAPSHOT_CACHE_MAX_FRIENDS)
+            : [];
+
+        return {
+            version: RESONITE_SNAPSHOT_CACHE_VERSION,
+            persistedAt: Date.now(),
+            friends: friendsSnapshot
+        };
+    }
+
+    function sanitizePersistedResoniteFriend(friendData) {
+        if (!friendData?.id || friendData?.provider !== 'resonite') {
+            return null;
+        }
+
+        const refResonite = friendData?.ref?.resonite || {};
+        const topLevelResonite = friendData?.resonite || {};
+        const mergedResonite = {
+            ...refResonite,
+            ...topLevelResonite,
+            realtime: {
+                ...(refResonite.realtime || {}),
+                ...(topLevelResonite.realtime || {})
+            }
+        };
+
+        return {
+            id: friendData.id,
+            provider: 'resonite',
+            isExternal: true,
+            state: String(friendData.state || 'offline').trim() || 'offline',
+            status: String(friendData.status || '').trim(),
+            name: String(
+                friendData.name || friendData?.ref?.displayName || ''
+            ).trim(),
+            ref: {
+                id: String(friendData?.ref?.id || friendData.id).trim(),
+                displayName: String(
+                    friendData?.ref?.displayName || friendData.name || ''
+                ).trim(),
+                status: String(
+                    friendData?.ref?.status || friendData.status || ''
+                ).trim(),
+                state: String(
+                    friendData?.ref?.state || friendData.state || ''
+                ).trim(),
+                location: String(friendData?.ref?.location || '').trim(),
+                traveling: String(friendData?.ref?.traveling || '').trim(),
+                statusDescription: String(
+                    friendData?.ref?.statusDescription || ''
+                ).trim(),
+                profileImageUrl: String(
+                    friendData?.ref?.profileImageUrl || ''
+                ).trim(),
+                userIcon: String(friendData?.ref?.userIcon || '').trim(),
+                resonite: {
+                    userId: firstNonEmptyString(
+                        mergedResonite.userId,
+                        stripResonitePrefix(friendData.id)
+                    ),
+                    username: String(mergedResonite.username || '').trim(),
+                    onlineStatus: String(
+                        mergedResonite.onlineStatus || ''
+                    ).trim(),
+                    locationName: String(
+                        mergedResonite.locationName || ''
+                    ).trim(),
+                    currentSessionHash: String(
+                        mergedResonite.currentSessionHash || ''
+                    ).trim(),
+                    currentSessionName: String(
+                        mergedResonite.currentSessionName || ''
+                    ).trim(),
+                    userSessionId: String(
+                        mergedResonite.userSessionId || ''
+                    ).trim(),
+                    sessionType: String(
+                        mergedResonite.sessionType || ''
+                    ).trim(),
+                    outputDevice: String(
+                        mergedResonite.outputDevice || ''
+                    ).trim(),
+                    appVersion: String(mergedResonite.appVersion || '').trim(),
+                    compatibilityHash: String(
+                        mergedResonite.compatibilityHash || ''
+                    ).trim(),
+                    isPresent: Boolean(mergedResonite.isPresent),
+                    profile: {
+                        iconUrl: String(
+                            mergedResonite.profile?.iconUrl ||
+                                friendData?.ref?.profileImageUrl ||
+                                ''
+                        ).trim(),
+                        tagline: String(
+                            mergedResonite.profile?.tagline || ''
+                        ).trim(),
+                        description: String(
+                            mergedResonite.profile?.description || ''
+                        ).trim()
+                    },
+                    realtime: {
+                        onlineStatus: String(
+                            mergedResonite.realtime?.onlineStatus ||
+                                mergedResonite.onlineStatus ||
+                                ''
+                        ).trim(),
+                        currentSessionHash: String(
+                            mergedResonite.realtime?.currentSessionHash ||
+                                mergedResonite.currentSessionHash ||
+                                ''
+                        ).trim(),
+                        currentSessionName: String(
+                            mergedResonite.realtime?.currentSessionName ||
+                                mergedResonite.currentSessionName ||
+                                ''
+                        ).trim(),
+                        userSessionId: String(
+                            mergedResonite.realtime?.userSessionId ||
+                                mergedResonite.userSessionId ||
+                                ''
+                        ).trim(),
+                        sessionType: String(
+                            mergedResonite.realtime?.sessionType ||
+                                mergedResonite.sessionType ||
+                                ''
+                        ).trim(),
+                        outputDevice: String(
+                            mergedResonite.realtime?.outputDevice ||
+                                mergedResonite.outputDevice ||
+                                ''
+                        ).trim(),
+                        appVersion: String(
+                            mergedResonite.realtime?.appVersion ||
+                                mergedResonite.appVersion ||
+                                ''
+                        ).trim(),
+                        compatibilityHash: String(
+                            mergedResonite.realtime?.compatibilityHash ||
+                                mergedResonite.compatibilityHash ||
+                                ''
+                        ).trim(),
+                        isPresent: Boolean(
+                            mergedResonite.realtime?.isPresent ??
+                            mergedResonite.isPresent
+                        ),
+                        currentSessionIndex: Number(
+                            mergedResonite.realtime?.currentSessionIndex ?? -1
+                        ),
+                        lastPresenceTimestamp: String(
+                            mergedResonite.realtime?.lastPresenceTimestamp || ''
+                        ).trim(),
+                        lastStatusChange: String(
+                            mergedResonite.realtime?.lastStatusChange || ''
+                        ).trim(),
+                        sourceEvent: String(
+                            mergedResonite.realtime?.sourceEvent || ''
+                        ).trim()
+                    }
+                }
+            },
+            resonite: {
+                userId: firstNonEmptyString(
+                    mergedResonite.userId,
+                    stripResonitePrefix(friendData.id)
+                ),
+                username: String(mergedResonite.username || '').trim(),
+                onlineStatus: String(mergedResonite.onlineStatus || '').trim(),
+                locationName: String(mergedResonite.locationName || '').trim(),
+                currentSessionHash: String(
+                    mergedResonite.currentSessionHash || ''
+                ).trim(),
+                currentSessionName: String(
+                    mergedResonite.currentSessionName || ''
+                ).trim(),
+                userSessionId: String(
+                    mergedResonite.userSessionId || ''
+                ).trim(),
+                sessionType: String(mergedResonite.sessionType || '').trim(),
+                outputDevice: String(mergedResonite.outputDevice || '').trim(),
+                appVersion: String(mergedResonite.appVersion || '').trim(),
+                compatibilityHash: String(
+                    mergedResonite.compatibilityHash || ''
+                ).trim(),
+                isPresent: Boolean(mergedResonite.isPresent),
+                profile: {
+                    iconUrl: String(
+                        mergedResonite.profile?.iconUrl ||
+                            friendData?.ref?.profileImageUrl ||
+                            ''
+                    ).trim(),
+                    tagline: String(
+                        mergedResonite.profile?.tagline || ''
+                    ).trim(),
+                    description: String(
+                        mergedResonite.profile?.description || ''
+                    ).trim()
+                },
+                realtime: {
+                    onlineStatus: String(
+                        mergedResonite.realtime?.onlineStatus ||
+                            mergedResonite.onlineStatus ||
+                            ''
+                    ).trim(),
+                    currentSessionHash: String(
+                        mergedResonite.realtime?.currentSessionHash ||
+                            mergedResonite.currentSessionHash ||
+                            ''
+                    ).trim(),
+                    currentSessionName: String(
+                        mergedResonite.realtime?.currentSessionName ||
+                            mergedResonite.currentSessionName ||
+                            ''
+                    ).trim(),
+                    userSessionId: String(
+                        mergedResonite.realtime?.userSessionId ||
+                            mergedResonite.userSessionId ||
+                            ''
+                    ).trim(),
+                    sessionType: String(
+                        mergedResonite.realtime?.sessionType ||
+                            mergedResonite.sessionType ||
+                            ''
+                    ).trim(),
+                    outputDevice: String(
+                        mergedResonite.realtime?.outputDevice ||
+                            mergedResonite.outputDevice ||
+                            ''
+                    ).trim(),
+                    appVersion: String(
+                        mergedResonite.realtime?.appVersion ||
+                            mergedResonite.appVersion ||
+                            ''
+                    ).trim(),
+                    compatibilityHash: String(
+                        mergedResonite.realtime?.compatibilityHash ||
+                            mergedResonite.compatibilityHash ||
+                            ''
+                    ).trim(),
+                    isPresent: Boolean(
+                        mergedResonite.realtime?.isPresent ??
+                        mergedResonite.isPresent
+                    ),
+                    currentSessionIndex: Number(
+                        mergedResonite.realtime?.currentSessionIndex ?? -1
+                    ),
+                    lastPresenceTimestamp: String(
+                        mergedResonite.realtime?.lastPresenceTimestamp || ''
+                    ).trim(),
+                    lastStatusChange: String(
+                        mergedResonite.realtime?.lastStatusChange || ''
+                    ).trim(),
+                    sourceEvent: String(
+                        mergedResonite.realtime?.sourceEvent || ''
+                    ).trim()
+                }
+            }
+        };
+    }
+
     return {
         state,
 
@@ -1442,6 +3043,12 @@ export const useFriendStore = defineStore('Friend', () => {
         resetDerivedDebugCounters,
         getDerivedDebugCounters,
         initFriendLogHistoryTable,
-        setIsRefreshFriendsLoading
+        setIsRefreshFriendsLoading,
+        hydratePersistedResoniteState,
+        clearResoniteState,
+        refreshResoniteFriends,
+        commitPendingResoniteUpdate,
+        upsertResoniteFriend,
+        removeStaleResoniteFriends
     };
 });

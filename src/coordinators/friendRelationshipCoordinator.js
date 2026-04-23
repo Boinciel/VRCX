@@ -20,6 +20,17 @@ import { watchState } from '../services/watchState';
 import configRepository from '../services/config';
 import { storeToRefs } from 'pinia';
 
+function isVrchatFriendshipUserId(id) {
+    const normalizedId = String(id || '').trim();
+    if (!normalizedId.startsWith('usr_')) {
+        return false;
+    }
+
+    const friendStore = useFriendStore();
+    const friendCtx = friendStore.friends.get(normalizedId);
+    return friendCtx?.isExternal !== true && friendCtx?.provider !== 'resonite';
+}
+
 /**
  * @param {object} args
  */
@@ -103,6 +114,10 @@ function deleteFriendRequest(userId) {
  * @param {string} id
  */
 export function addFriendship(id) {
+    if (!isVrchatFriendshipUserId(id)) {
+        return;
+    }
+
     const friendStore = useFriendStore();
     const userStore = useUserStore();
     const notificationStore = useNotificationStore();
@@ -190,6 +205,10 @@ export function addFriendship(id) {
  * @param {object} ref
  */
 export function updateFriendship(ref) {
+    if (!isVrchatFriendshipUserId(ref?.id) || ref?.isExternal === true) {
+        return;
+    }
+
     const friendStore = useFriendStore();
     const notificationStore = useNotificationStore();
     const sharedFeedStore = useSharedFeedStore();
@@ -363,6 +382,10 @@ export function runDeleteFriendshipFlow(
     id,
     { nowIso = () => new Date().toJSON() } = {}
 ) {
+    if (!isVrchatFriendshipUserId(id)) {
+        return;
+    }
+
     const friendStore = useFriendStore();
     const userStore = useUserStore();
     const notificationStore = useNotificationStore();
@@ -435,6 +458,8 @@ export function runUpdateFriendshipsFlow(
         if (id === userStore.currentUser.id) {
             friendLog.delete(id);
             database.deleteFriendLogCurrent(id);
+        } else if (!isVrchatFriendshipUserId(id)) {
+            continue;
         } else if (!set.has(id)) {
             runDeleteFriendshipFlow(id, { nowIso });
         }

@@ -10,6 +10,7 @@ import { runRefreshPlayerModerationsFlow } from '../coordinators/moderationCoord
 import { clearVRCXCache } from '../coordinators/vrcxCoordinator';
 import { useAuthStore } from './auth';
 import { useDiscordPresenceSettingsStore } from './settings/discordPresence';
+import { useAdvancedSettingsStore } from './settings/advanced';
 import { useFriendStore } from './friend';
 import { handleGroupUserInstances } from '../coordinators/groupCoordinator';
 import {
@@ -28,6 +29,7 @@ export const useUpdateLoopStore = defineStore('UpdateLoop', () => {
     const authStore = useAuthStore();
     const userStore = useUserStore();
     const friendStore = useFriendStore();
+    const advancedSettingsStore = useAdvancedSettingsStore();
     const vrcxStore = useVrcxStore();
     const discordPresenceSettingsStore = useDiscordPresenceSettingsStore();
     const vrcxUpdaterStore = useVRCXUpdaterStore();
@@ -36,6 +38,7 @@ export const useUpdateLoopStore = defineStore('UpdateLoop', () => {
         nextCurrentUserRefresh: 300,
         nextFriendsRefresh: 3600,
         nextGroupInstanceRefresh: 0,
+        nextResoniteFriendsRefresh: 0,
         nextAppUpdateCheck: 3600,
         ipcTimeout: 0,
         nextClearVRCXCacheCheck: 86400,
@@ -52,6 +55,7 @@ export const useUpdateLoopStore = defineStore('UpdateLoop', () => {
             state.nextCurrentUserRefresh = 300;
             state.nextFriendsRefresh = 3600;
             state.nextGroupInstanceRefresh = 0;
+            state.nextResoniteFriendsRefresh = 0;
         },
         { flush: 'sync' }
     );
@@ -85,6 +89,18 @@ export const useUpdateLoopStore = defineStore('UpdateLoop', () => {
                     ) {
                         runRefreshPlayerModerationsFlow();
                     }
+                }
+                if (
+                    advancedSettingsStore.resoniteIntegration &&
+                    --state.nextResoniteFriendsRefresh <= 0
+                ) {
+                    const refreshSeconds = Math.max(
+                        30,
+                        Number(advancedSettingsStore.resoniteRefreshSeconds) ||
+                            300
+                    );
+                    state.nextResoniteFriendsRefresh = refreshSeconds;
+                    friendStore.refreshResoniteFriends();
                 }
                 if (--state.nextGroupInstanceRefresh <= 0) {
                     if (watchState.isFriendsLoaded) {
