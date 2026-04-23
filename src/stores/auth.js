@@ -24,6 +24,7 @@ import { useModalStore } from './modal';
 import { useUpdateLoopStore } from './updateLoop';
 import { useUserStore } from './user';
 import { useVrcxStore } from './vrcx';
+import { useResoniteCredentialsStore } from './resoniteCredentials';
 import { watchState } from '../services/watchState';
 
 import configRepository from '../services/config';
@@ -41,6 +42,7 @@ export const useAuthStore = defineStore('Auth', () => {
     const modalStore = useModalStore();
     const vrcxStore = useVrcxStore();
     const activityStore = useActivityStore();
+    const resoniteCredentialsStore = useResoniteCredentialsStore();
 
     const { t } = useI18n();
     const state = reactive({
@@ -402,6 +404,9 @@ export const useAuthStore = defineStore('Auth', () => {
                             '{}'
                         )
                     );
+                    await resoniteCredentialsStore.decryptSavedResonitePasswords(
+                        value
+                    );
                     for (const userId in savedCredentials) {
                         security
                             .decrypt(
@@ -453,6 +458,7 @@ export const useAuthStore = defineStore('Auth', () => {
         enablePrimaryPasswordDialog.value.visible = false;
         if (advancedSettingsStore.enablePrimaryPassword) {
             const key = enablePrimaryPasswordDialog.value.password;
+            await resoniteCredentialsStore.encryptSavedResonitePasswords(key);
             const savedCredentials = await getAllSavedCredentials();
             for (const userId in savedCredentials) {
                 security

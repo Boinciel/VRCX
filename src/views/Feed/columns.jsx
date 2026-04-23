@@ -15,6 +15,10 @@ import {
     ChevronRight
 } from 'lucide-vue-next';
 import { formatDateFilter, statusClass, timeToText } from '../../shared/utils';
+import {
+    isResoniteFeedLocation,
+    renderFeedLocationRichText
+} from './feedLocation';
 import { i18n } from '../../plugins/i18n';
 import { useGalleryStore, useFriendStore } from '../../stores';
 import { showUserDialog } from '../../coordinators/userCoordinator';
@@ -30,6 +34,46 @@ const getFriendStore = () => {
     return friendStore;
 };
 
+const getFriendByAnyId = (userId) => {
+    const id = String(userId || '');
+    if (!id) {
+        return null;
+    }
+
+    const store = getFriendStore();
+    return (
+        store.friends.get(id) ||
+        (id.startsWith('resonite:')
+            ? null
+            : store.friends.get(`resonite:${id}`))
+    );
+};
+
+const renderLocationDetail = (entry, location, worldName, groupName) => {
+    if (isResoniteFeedLocation(entry)) {
+        return (
+            <div class="w-full min-w-0 truncate">
+                <span
+                    class="inline-block w-full truncate"
+                    innerHTML={renderFeedLocationRichText(location, worldName)}
+                ></span>
+            </div>
+        );
+    }
+
+    return (
+        <div class="w-full min-w-0 truncate">
+            <Location
+                location={location}
+                hint={worldName}
+                grouphint={groupName}
+                enableContextMenu
+                disableTooltip
+            />
+        </div>
+    );
+};
+
 const expandedRow = ({ row }) => {
     const original = row.original;
     const type = original.type;
@@ -39,11 +83,21 @@ const expandedRow = ({ row }) => {
             <div class="pl-5 text-sm">
                 {original.previousLocation ? (
                     <>
-                        <Location
-                            location={original.previousLocation}
-                            class="inline-block"
-                            enableContextMenu
-                        />
+                        {isResoniteFeedLocation(original) ? (
+                            <span
+                                class="inline-block"
+                                innerHTML={renderFeedLocationRichText(
+                                    original.previousLocation,
+                                    original.previousLocation
+                                )}
+                            ></span>
+                        ) : (
+                            <Location
+                                location={original.previousLocation}
+                                class="inline-block"
+                                enableContextMenu
+                            />
+                        )}
                         <Badge variant="secondary" class="ml-1 w-fit">
                             {timeToText(original.time)}
                         </Badge>
@@ -53,14 +107,14 @@ const expandedRow = ({ row }) => {
                         </span>
                     </>
                 ) : null}
-                {original.location ? (
-                    <Location
-                        location={original.location}
-                        hint={original.worldName}
-                        grouphint={original.groupName}
-                        enableContextMenu
-                    />
-                ) : null}
+                {original.location
+                    ? renderLocationDetail(
+                          original,
+                          original.location,
+                          original.worldName,
+                          original.groupName
+                      )
+                    : null}
             </div>
         );
     }
@@ -68,12 +122,21 @@ const expandedRow = ({ row }) => {
     if (type === 'Offline') {
         return original.location ? (
             <div class="pl-5 text-sm">
-                <Location
-                    location={original.location}
-                    hint={original.worldName}
-                    grouphint={original.groupName}
-                    enableContextMenu
-                />
+                {isResoniteFeedLocation(original) ? (
+                    <span
+                        innerHTML={renderFeedLocationRichText(
+                            original.location,
+                            original.worldName
+                        )}
+                    ></span>
+                ) : (
+                    <Location
+                        location={original.location}
+                        hint={original.worldName}
+                        grouphint={original.groupName}
+                        enableContextMenu
+                    />
+                )}
                 <Badge variant="secondary" class="ml-1 w-fit">
                     {timeToText(original.time)}
                 </Badge>
@@ -82,16 +145,14 @@ const expandedRow = ({ row }) => {
     }
 
     if (type === 'Online') {
-        return original.location ? (
-            <div class="pl-5 text-sm">
-                <Location
-                    location={original.location}
-                    hint={original.worldName}
-                    grouphint={original.groupName}
-                    enableContextMenu
-                />
-            </div>
-        ) : null;
+        return original.location
+            ? renderLocationDetail(
+                  original,
+                  original.location,
+                  original.worldName,
+                  original.groupName
+              )
+            : null;
     }
 
     if (type === 'Avatar') {
@@ -292,7 +353,7 @@ export const columns = [
         meta: { label: () => t('table.feed.user') },
         cell: ({ row }) => {
             const original = row.original;
-            const friend = getFriendStore().friends.get(original.userId);
+            const friend = getFriendByAnyId(original.userId);
             return (
                 <UserContextMenu
                     userId={original.userId}
@@ -322,31 +383,25 @@ export const columns = [
             const original = row.original;
             const type = original.type;
             if (type === 'GPS') {
-                return original.location ? (
-                    <div class="w-full min-w-0 truncate">
-                        <Location
-                            location={original.location}
-                            hint={original.worldName}
-                            grouphint={original.groupName}
-                            enableContextMenu
-                            disableTooltip
-                        />
-                    </div>
-                ) : null;
+                return original.location
+                    ? renderLocationDetail(
+                          original,
+                          original.location,
+                          original.worldName,
+                          original.groupName
+                      )
+                    : null;
             }
 
             if (type === 'Offline' || type === 'Online') {
-                return original.location ? (
-                    <div class="w-full min-w-0 truncate">
-                        <Location
-                            location={original.location}
-                            hint={original.worldName}
-                            grouphint={original.groupName}
-                            enableContextMenu
-                            disableTooltip
-                        />
-                    </div>
-                ) : null;
+                return original.location
+                    ? renderLocationDetail(
+                          original,
+                          original.location,
+                          original.worldName,
+                          original.groupName
+                      )
+                    : null;
             }
 
             if (type === 'Status') {

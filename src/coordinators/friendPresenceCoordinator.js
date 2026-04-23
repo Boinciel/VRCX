@@ -276,7 +276,12 @@ export async function runPendingOfflineTickFlow({
     nowIso = () => new Date().toJSON()
 } = {}) {
     const friendStore = useFriendStore();
-    const { friends, pendingOfflineMap, pendingOfflineDelay } = friendStore;
+    const {
+        friends,
+        pendingOfflineMap,
+        pendingOfflineDelay,
+        commitPendingResoniteUpdate
+    } = friendStore;
 
     const currentTime = now();
     for (const [id, pending] of pendingOfflineMap.entries()) {
@@ -299,6 +304,11 @@ export async function runPendingOfflineTickFlow({
                 console.log(ctx.name, 'pendingOfflineEnd');
             }
             pendingOfflineMap.delete(id);
+            if (pending.payload && ctx.provider === 'resonite') {
+                ctx.pendingOffline = false;
+                commitPendingResoniteUpdate(id, pending.payload);
+                continue;
+            }
             await runUpdateFriendDelayedCheckFlow(
                 ctx,
                 pending.newState,

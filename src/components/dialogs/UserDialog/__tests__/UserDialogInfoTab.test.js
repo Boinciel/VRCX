@@ -2,6 +2,9 @@ import { beforeEach, describe, expect, test, vi } from 'vitest';
 import { createTestingPinia } from '@pinia/testing';
 import { flushPromises, shallowMount } from '@vue/test-utils';
 
+const mockFetchResoniteUserProfiles = vi.fn();
+const mockShowUserDialog = vi.fn();
+
 vi.mock('vue-i18n', () => ({
     useI18n: () => {
         const { ref } = require('vue');
@@ -90,15 +93,26 @@ vi.mock('../../../../services/request', () => ({
     failedGetRequests: new Map()
 }));
 
+vi.mock('../../../../services/resoniteRealtime', () => ({
+    getResoniteSessionByHash: vi.fn(),
+    refreshResoniteSessionByHash: vi.fn(),
+    resoniteSessionCacheVersion: { value: 0 }
+}));
+
 import UserDialogInfoTab from '../UserDialogInfoTab.vue';
 import { miscRequest } from '../../../../api';
 import {
     useAdvancedSettingsStore,
     useAppearanceSettingsStore,
+    useFriendStore,
     useLocationStore,
     useModalStore,
     useUserStore
 } from '../../../../stores';
+import {
+    getResoniteSessionByHash,
+    refreshResoniteSessionByHash
+} from '../../../../services/resoniteRealtime';
 
 /**
  *
@@ -119,7 +133,8 @@ function mountComponent(overrides = {}) {
     advancedSettingsStore.$patch({
         bioLanguage: 'en',
         translationApi: '',
-        translationApiType: 'google'
+        translationApiType: 'google',
+        resoniteApiKey: 'U-test:session-token'
     });
     const advancedSettings = advancedSettingsStore;
     advancedSettings.translateText = vi.fn().mockResolvedValue('');
@@ -205,13 +220,21 @@ function mountComponent(overrides = {}) {
     const modal = useModalStore(pinia);
     modal.confirm = vi.fn().mockResolvedValue({ ok: false });
 
+    const friendStore = useFriendStore(pinia);
+    friendStore.$patch({
+        friends: new Map(overrides.friendsEntries || [])
+    });
+
     return shallowMount(UserDialogInfoTab, {
         global: {
             plugins: [pinia],
             stubs: {
                 Location: true,
                 Timer: true,
-                TooltipWrapper: true,
+                TooltipWrapper: {
+                    template: '<div><slot /><slot name="content" /></div>'
+                },
+
                 AvatarInfo: true
             }
         }
@@ -221,6 +244,7 @@ function mountComponent(overrides = {}) {
 describe('UserDialogInfoTab.vue', () => {
     beforeEach(() => {
         vi.clearAllMocks();
+        vi.mocked(getResoniteSessionByHash).mockReturnValue(null);
     });
 
     describe('unit behavior', () => {
@@ -237,6 +261,46 @@ describe('UserDialogInfoTab.vue', () => {
 
             expect(creditsSpy).toHaveBeenCalledTimes(0);
         });
+
+        test('refreshResoniteSessionInfo refreshes contacts and forces current session hash resolution', async () => {
+            const wrapper = mountComponent({
+                userDialog: {
+                    id: 'resonite:U-host',
+                    isExternal: true,
+                    ref: {
+                        id: 'resonite:U-host',
+                        location: 'Soft Sea of Stars',
+                        resonite: {
+                            userId: 'U-host',
+                            currentSessionHash: 'S-hash'
+                        },
+                        state: 'online',
+                        displayName: 'HostUser',
+                        bio: '',
+                        bioLinks: [],
+                        profilePicOverride: '',
+                        currentAvatarImageUrl: '',
+                        currentAvatarTags: [],
+                        $online_for: 1000,
+                        last_login: '2025-01-01T00:00:00.000Z',
+                        last_activity: '2025-01-01T00:00:00.000Z',
+                        date_joined: '2020-01-01',
+                        allowAvatarCopying: true
+                    }
+                }
+            });
+
+            await wrapper.vm.refreshResoniteSessionInfo();
+
+            const friendStore = useFriendStore();
+            expect(friendStore.refreshResoniteFriends).toHaveBeenCalledTimes(1);
+            expect(refreshResoniteSessionByHash).toHaveBeenCalledWith({
+                sessionHash: 'S-hash',
+                userId: 'U-host',
+                apiKey: 'U-test:session-token',
+                force: true
+            });
+        });
     });
 
     describe('dom rendering', () => {
@@ -247,6 +311,243 @@ describe('UserDialogInfoTab.vue', () => {
                 true
             );
             expect(wrapper.find('spinner-stub').exists()).toBe(true);
+        });
+
+        test('renders Resonite session host separately from other participants', () => {
+            vi.mocked(getResoniteSessionByHash).mockReturnValue({
+                name: '<color=blue>TMSC<color=purple> Zutyo <color=red>Home',
+                hostUserId: 'U-host',
+                hostUsername: 'HostUser',
+                joinedUsers: 3,
+                maxUsers: 16,
+                sessionURLs: ['resonite://session'],
+                sessionUsers: [
+                    { userID: 'U-host', username: 'HostUser', isPresent: true },
+                    {
+                        userID: 'U-other',
+                        username: 'OtherUser',
+                        isPresent: true
+                    },
+                    {
+                        userID: 'U-guest',
+                        username: 'GuestUser',
+                        isPresent: false
+                    }
+                ]
+            });
+
+            const wrapper = mountComponent({
+                userDialog: {
+                    id: 'resonite:U-host',
+                    isExternal: true,
+                    friend: {
+                        state: 'online',
+                        ref: {
+                            location:
+                                '<color=blue>TMSC<color=purple> Zutyo <color=red>Home'
+                        }
+                    },
+                    ref: {
+                        id: 'resonite:U-host',
+                        location:
+                            '<color=blue>TMSC<color=purple> Zutyo <color=red>Home',
+                        resonite: {
+                            currentSessionHash: 'S-hash',
+                            locationName:
+                                '<color=blue>TMSC<color=purple> Zutyo <color=red>Home'
+                        },
+                        state: 'online',
+                        displayName: 'HostUser',
+                        bio: '',
+                        bioLinks: [],
+                        profilePicOverride: '',
+                        currentAvatarImageUrl: '',
+                        currentAvatarTags: [],
+                        $online_for: 1000,
+                        last_login: '2025-01-01T00:00:00.000Z',
+                        last_activity: '2025-01-01T00:00:00.000Z',
+                        date_joined: '2020-01-01',
+                        allowAvatarCopying: true
+                    },
+                    $location: null,
+                    users: []
+                },
+                friendsEntries: [
+                    [
+                        'resonite:U-host',
+                        {
+                            id: 'resonite:U-host',
+                            name: 'HostUser',
+                            ref: { $userColour: '#00f', location: 'Somewhere' }
+                        }
+                    ],
+                    [
+                        'resonite:U-guest',
+                        {
+                            id: 'resonite:U-guest',
+                            name: 'GuestUser',
+                            ref: { $userColour: '#0f0', location: 'Somewhere' }
+                        }
+                    ]
+                ]
+            });
+
+            expect(wrapper.text()).toContain(
+                'dialog.user.info.instance_creator'
+            );
+            expect(wrapper.text()).toContain('GuestUser');
+            expect(wrapper.text()).toContain('OtherUser');
+            expect(wrapper.text()).toContain('3 /16');
+            expect(wrapper.text().match(/HostUser/g) || []).toHaveLength(1);
+            expect(wrapper.text().indexOf('GuestUser')).toBeLessThan(
+                wrapper.text().indexOf('OtherUser')
+            );
+        });
+
+        test('hides Resonite action buttons for private sessions', () => {
+            vi.mocked(getResoniteSessionByHash).mockReturnValue({
+                name: 'Private Session',
+                accessLevel: 'private',
+                sessionURLs: ['resonite://private-session'],
+                sessionUsers: []
+            });
+
+            const wrapper = mountComponent({
+                userDialog: {
+                    id: 'resonite:U-private',
+                    isExternal: true,
+                    friend: {
+                        state: 'online',
+                        ref: {
+                            location: 'Private'
+                        }
+                    },
+                    ref: {
+                        id: 'resonite:U-private',
+                        location: 'Private',
+                        state: 'online',
+                        displayName: 'PrivateUser',
+                        resonite: {
+                            currentSessionHash: 'S-private',
+                            locationName: 'Private'
+                        },
+                        bio: '',
+                        bioLinks: [],
+                        profilePicOverride: '',
+                        currentAvatarImageUrl: '',
+                        currentAvatarTags: [],
+                        $online_for: 1000,
+                        last_login: '2025-01-01T00:00:00.000Z',
+                        last_activity: '2025-01-01T00:00:00.000Z',
+                        date_joined: '2020-01-01',
+                        allowAvatarCopying: true
+                    },
+                    $location: null,
+                    users: []
+                }
+            });
+
+            expect(wrapper.html()).not.toContain('log-in-stub');
+            expect(wrapper.html()).not.toContain('refresh-cw-stub');
+            expect(wrapper.html()).not.toContain('users-round-stub');
+            expect(wrapper.html()).not.toContain('user-plus2-stub');
+        });
+
+        test('hides Resonite action buttons for offline users even with stale location data', () => {
+            const wrapper = mountComponent({
+                userDialog: {
+                    id: 'resonite:U-offline',
+                    isExternal: true,
+                    friend: {
+                        state: 'offline',
+                        ref: {
+                            location: 'Some Old World'
+                        }
+                    },
+                    ref: {
+                        id: 'resonite:U-offline',
+                        location: 'Some Old World',
+                        state: 'offline',
+                        displayName: 'OfflineUser',
+                        bio: '',
+                        bioLinks: [],
+                        profilePicOverride: '',
+                        currentAvatarImageUrl: '',
+                        currentAvatarTags: [],
+                        $online_for: 1000,
+                        last_login: '2025-01-01T00:00:00.000Z',
+                        last_activity: '2025-01-01T00:00:00.000Z',
+                        date_joined: '2020-01-01',
+                        allowAvatarCopying: true
+                    },
+                    $location: null,
+                    users: []
+                }
+            });
+
+            expect(wrapper.html()).not.toContain('log-in-stub');
+            expect(wrapper.html()).not.toContain('refresh-cw-stub');
+            expect(wrapper.html()).not.toContain('users-round-stub');
+            expect(wrapper.html()).not.toContain('user-plus2-stub');
+        });
+
+        test('hides VRChat-only info fields for Resonite contacts while keeping useful stats', () => {
+            const wrapper = mountComponent({
+                userDialog: {
+                    id: 'resonite:U-contact',
+                    isExternal: true,
+                    friend: {
+                        state: 'offline',
+                        ref: {
+                            location: 'Offline'
+                        }
+                    },
+                    ref: {
+                        id: 'resonite:U-contact',
+                        location: 'Offline',
+                        state: 'offline',
+                        displayName: 'Resonite Contact',
+                        resonite: {
+                            userId: 'U-contact'
+                        },
+                        bio: 'Ignored bio',
+                        bioLinks: ['https://example.com'],
+                        profilePicOverride: '',
+                        currentAvatarImageUrl: '',
+                        currentAvatarTags: [],
+                        $online_for: '',
+                        $offline_for: Date.now() - 1000,
+                        last_login: '2025-01-01T00:00:00.000Z',
+                        last_activity: '2025-01-02T00:00:00.000Z',
+                        date_joined: '2020-01-01',
+                        allowAvatarCopying: false
+                    },
+                    representedGroup: {
+                        isRepresenting: false
+                    },
+                    lastSeen: '2025-01-03T00:00:00.000Z',
+                    joinCount: 4,
+                    timeSpent: 7200000,
+                    dateFriended: '2025-01-04T00:00:00.000Z'
+                }
+            });
+
+            expect(wrapper.text()).not.toContain(
+                'dialog.user.info.avatar_info'
+            );
+            expect(wrapper.text()).not.toContain(
+                'dialog.user.info.represented_group'
+            );
+            expect(wrapper.text()).not.toContain('dialog.user.info.bio');
+            expect(wrapper.text()).not.toContain(
+                'dialog.user.info.avatar_cloning'
+            );
+            expect(wrapper.text()).toContain('dialog.user.info.last_seen');
+            expect(wrapper.text()).toContain('dialog.user.info.join_count');
+            expect(wrapper.text()).toContain('dialog.user.info.time_together');
+            expect(wrapper.text()).toContain('dialog.user.info.offline_for');
+            expect(wrapper.text()).toContain('dialog.user.info.last_activity');
+            expect(wrapper.text()).toContain('dialog.user.info.friended');
         });
     });
 });

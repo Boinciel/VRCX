@@ -33,6 +33,7 @@ export const useSharedFeedStore = defineStore('SharedFeed', () => {
     async function rebuildOnPlayerJoining() {
         let newOnPlayerJoining = [];
         for (const ref of userStore.currentTravelers.values()) {
+            const locationTag = ref?.$location?.tag;
             const isFavorite = friendStore.localFavoriteFriends.has(ref.id);
             if (
                 locationStore.lastLocation.playerList.has(ref.id) ||
@@ -42,7 +43,10 @@ export const useSharedFeedStore = defineStore('SharedFeed', () => {
             ) {
                 continue;
             }
-            if (ref.$location.tag === locationStore.lastLocation.location) {
+            if (!locationTag) {
+                continue;
+            }
+            if (locationTag === locationStore.lastLocation.location) {
                 const feedEntry = {
                     ...ref,
                     isFavorite,
@@ -59,7 +63,7 @@ export const useSharedFeedStore = defineStore('SharedFeed', () => {
                 type: 'GPS',
                 userId: ref.id,
                 displayName: ref.displayName,
-                location: ref.$location.tag,
+                location: locationTag,
                 worldName,
                 groupName,
                 previousLocation: '',

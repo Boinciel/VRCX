@@ -8,31 +8,33 @@
                 <ExternalLink class="size-4" />
                 {{ t('common.actions.view_details') }}
             </ContextMenuItem>
-            <ContextMenuSeparator />
-            <ContextMenuItem v-if="isOnline" @click="handleRequestInvite">
+            <ContextMenuSeparator v-if="!isExternalUser" />
+            <ContextMenuItem v-if="!isExternalUser && isOnline" @click="handleRequestInvite">
                 <Mail class="size-4" />
                 {{ t('dialog.user.actions.request_invite') }}
                 <ContextMenuShortcut v-if="showRecentRequestInvite">
                     <Clock class="size-3.5 text-muted-foreground" />
                 </ContextMenuShortcut>
             </ContextMenuItem>
-            <ContextMenuItem v-if="isGameRunning" :disabled="!canInviteToMyLocation" @click="handleInvite">
+            <ContextMenuItem v-if="!isExternalUser && isGameRunning" :disabled="!canInviteToMyLocation"
+                @click="handleInvite">
                 <MessageSquare class="size-4" />
                 {{ t('dialog.user.actions.invite') }}
                 <ContextMenuShortcut v-if="showRecentInvite">
                     <Clock class="size-3.5 text-muted-foreground" />
                 </ContextMenuShortcut>
             </ContextMenuItem>
-            <ContextMenuItem :disabled="!currentUser?.isBoopingEnabled" @click="handleSendBoop">
+            <ContextMenuItem v-if="!isExternalUser" :disabled="!currentUser?.isBoopingEnabled" @click="handleSendBoop">
                 <MousePointer class="size-4" />
                 {{ t('dialog.user.actions.send_boop') }}
             </ContextMenuItem>
-            <ContextMenuSeparator v-if="isOnline && hasLocation" />
-            <ContextMenuItem v-if="isOnline && hasLocation" :disabled="!canJoin" @click="handleJoin">
+            <ContextMenuSeparator v-if="!isExternalUser && isOnline && hasLocation" />
+            <ContextMenuItem v-if="!isExternalUser && isOnline && hasLocation" :disabled="!canJoin" @click="handleJoin">
                 <LogIn class="size-4" />
                 {{ t('dialog.user.info.launch_invite_tooltip') }}
             </ContextMenuItem>
-            <ContextMenuItem v-if="isOnline && hasLocation" :disabled="!canJoin" @click="handleSelfInvite">
+            <ContextMenuItem v-if="!isExternalUser && isOnline && hasLocation" :disabled="!canJoin"
+                @click="handleSelfInvite">
                 <Mail class="size-4" />
                 {{ t('dialog.user.info.self_invite_tooltip') }}
             </ContextMenuItem>
@@ -88,6 +90,12 @@
     });
 
     const isOnline = computed(() => props.state === 'online');
+    const isExternalUser = computed(
+        () => {
+            const userId = String(props.userId || '');
+            return userId.startsWith('resonite:') || /^[uU]-/.test(userId);
+        }
+    );
     const hasLocation = computed(() => !!props.location && isRealInstance(props.location));
     const canInviteToMyLocation = computed(() => checkCanInvite(lastLocation.value.location));
     const canJoin = computed(() => {

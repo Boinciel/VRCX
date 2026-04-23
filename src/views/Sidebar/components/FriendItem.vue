@@ -34,22 +34,30 @@
                         {{ t('side_panel.pending_offline') }}
                     </div>
                     <template v-else-if="isGroupByInstance">
-                        <div class="flex items-center">
-                            <Spinner v-if="isFriendTraveling" class="mr-1" />
-                            <Timer
-                                class="text-xs"
-                                :epoch="epoch"
-                                :style="
-                                    isFriendTraveling ? { display: 'inline-block', overflow: 'unset' } : undefined
-                                " />
-                        </div>
+                        <template v-if="!friend.isExternal">
+                            <div class="flex items-center">
+                                <Spinner v-if="isFriendTraveling" class="mr-1" />
+                                <Timer
+                                    class="text-xs"
+                                    :epoch="epoch"
+                                    :style="
+                                        isFriendTraveling ? { display: 'inline-block', overflow: 'unset' } : undefined
+                                    " />
+                            </div>
+                        </template>
+                        <template v-else>
+                            <span class="text-xs" v-html="renderedExternalPresenceLine"></span>
+                        </template>
                     </template>
-                    <Location
-                        v-else
-                        class="extra block truncate text-xs!"
-                        :location="locationProp"
-                        :traveling="travelingProp"
-                        :link="false" />
+                    <template v-else>
+                        <Location
+                            v-if="!friend.isExternal"
+                            class="extra block truncate text-xs!"
+                            :location="locationProp"
+                            :traveling="travelingProp"
+                            :link="false" />
+                        <span v-else class="text-xs" v-html="renderedExternalPresenceLine"></span>
+                    </template>
                 </template>
             </div>
         </template>
@@ -76,6 +84,8 @@
 
     import { useAppearanceSettingsStore, useFriendStore } from '../../../stores';
     import { useUserDisplay } from '../../../composables/useUserDisplay';
+    import { getResoniteSessionByHash } from '../../../services/resoniteRealtime';
+    import { renderResoniteRichText } from '../../../shared/utils/resoniteRichText';
 
     import '@/styles/status-icon.css';
     import { showUserDialog } from '../../../coordinators/userCoordinator';
@@ -92,11 +102,52 @@
 
     const { t } = useI18n();
 
+    const resoniteAccessLevelLabels = {
+        private: 'Private',
+        lan: 'LAN',
+        contacts: 'Contacts only',
+        contactsplus: 'Contacts+',
+        registeredusers: 'Registered users',
+        anyone: 'Public'
+    };
+
     const isFriendTraveling = computed(() => props.friend.ref?.location === 'traveling');
     const isFriendActiveOrOffline = computed(() => props.friend.state === 'active' || props.friend.state === 'offline');
 
     const friendStatusClass = computed(() => {
         return userStatusClass(props.friend.ref, props.friend.pendingOffline);
+    });
+
+    function formatResonitePresenceLocation(location) {
+        const baseLocation = String(location || '').trim();
+        if (!baseLocation) {
+            return '';
+        }
+
+        const sessionHash = String(
+            props.friend.ref?.resonite?.currentSessionHash || props.friend.resonite?.currentSessionHash || ''
+        ).trim();
+        const accessLevel = String(getResoniteSessionByHash(sessionHash)?.accessLevel || '')
+            .trim()
+            .toLowerCase();
+        const accessSuffix = resoniteAccessLevelLabels[accessLevel] || '';
+
+        if (!accessSuffix || baseLocation.toLowerCase() === accessSuffix.toLowerCase()) {
+            return baseLocation;
+        }
+
+        return `${baseLocation} · ${accessSuffix}`;
+    }
+
+    const externalPresenceLine = computed(() => {
+        const traveling = String(props.friend.ref?.traveling || '').trim();
+        const rawLocation = String(props.friend.ref?.location || '').trim();
+        // 'offline' is a sentinel from contacts-only payloads — don't display it as a world name
+        const location = rawLocation !== 'offline' ? formatResonitePresenceLocation(rawLocation) : '';
+        const statusDescription = String(props.friend.ref?.statusDescription || '').trim();
+        const provider = String(props.friend.provider || 'external').trim();
+
+        return traveling || location || statusDescription || `[${provider}]`;
     });
 
     const epoch = computed(() =>
@@ -105,4 +156,9 @@
 
     const locationProp = computed(() => props.friend.ref?.location || '');
     const travelingProp = computed(() => props.friend.ref?.travelingToLocation || '');
+
+    // For Resonite (external) friends render colour tags; for others just escape the text.
+    const renderedExternalPresenceLine = computed(() =>
+        props.friend.isExternal ? renderResoniteRichText(externalPresenceLine.value) : externalPresenceLine.value
+    );
 </script>

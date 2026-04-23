@@ -57,7 +57,11 @@
                                     </UserContextMenu>
                                     <span class="shrink-0 text-muted-foreground mx-1"> → </span>
                                     <div class="min-w-0 flex-1 truncate">
+                                        <template v-if="isResoniteFeedLocation(item)">
+                                            <span v-html="renderFeedLocationRichText(item.location, item.worldName)" />
+                                        </template>
                                         <Location
+                                            v-else
                                             :location="item.location"
                                             :hint="item.worldName"
                                             :grouphint="item.groupName"
@@ -80,7 +84,14 @@
                                     <template v-if="item.location">
                                         <span class="shrink-0 text-muted-foreground"> → </span>
                                         <div class="min-w-0 flex-1 truncate">
+                                            <template v-if="isResoniteFeedLocation(item)">
+                                                <span
+                                                    v-html="
+                                                        renderFeedLocationRichText(item.location, item.worldName)
+                                                    " />
+                                            </template>
                                             <Location
+                                                v-else
                                                 :location="item.location"
                                                 :hint="item.worldName"
                                                 :grouphint="item.groupName"
@@ -166,6 +177,7 @@
 
     import { statusClass } from '@/shared/utils/user';
     import { formatDateFilter } from '@/shared/utils';
+    import { isResoniteFeedLocation, renderFeedLocationRichText } from '@/views/Feed/feedLocation';
     import { showUserDialog } from '@/coordinators/userCoordinator';
     import { useFeedStore, useFriendStore } from '@/stores';
 
@@ -258,13 +270,25 @@
         }
     }
 
+    function getFriendByAnyId(userId) {
+        const id = String(userId || '');
+        if (!id) {
+            return null;
+        }
+
+        return (
+            friendStore.friends.get(id) ||
+            (id.startsWith('resonite:') ? null : friendStore.friends.get(`resonite:${id}`))
+        );
+    }
+
     function getFriendState(userId) {
-        const friend = friendStore.friends.get(userId);
+        const friend = getFriendByAnyId(userId);
         return friend?.state ?? '';
     }
 
     function getFriendLocation(userId) {
-        const friend = friendStore.friends.get(userId);
+        const friend = getFriendByAnyId(userId);
         return friend?.ref?.location ?? '';
     }
 

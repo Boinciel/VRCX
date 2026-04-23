@@ -18,6 +18,15 @@ function createDefaultFetchState() {
 
 const EMPTY_USER_ID = 'usr_00000000-0000-0000-0000-000000000000';
 
+function isVrchatMutualEligibleFriend(friend) {
+    const id = normalizeIdentifier(friend?.id);
+    return Boolean(
+        id.startsWith('usr_') &&
+        friend?.isExternal !== true &&
+        friend?.provider !== 'resonite'
+    );
+}
+
 function normalizeIdentifier(value) {
     if (typeof value === 'string') return value;
     if (value === undefined || value === null) return '';
@@ -47,7 +56,12 @@ export const useChartsStore = defineStore('Charts', () => {
         cancelRequested: false
     });
 
-    const friendCount = computed(() => friendStore.friends.size || 0);
+    const friendCount = computed(
+        () =>
+            Array.from(friendStore.friends.values()).filter(
+                isVrchatMutualEligibleFriend
+            ).length || 0
+    );
     const currentUser = computed(
         () => userStore.currentUser?.value ?? userStore.currentUser
     );
@@ -199,7 +213,11 @@ export const useChartsStore = defineStore('Charts', () => {
      * @returns {Promise<{success: boolean, mutuals: Array, optedOut: boolean}>}
      */
     async function fetchSingleFriendMutuals(friendId) {
-        if (!friendId || isOptOut.value) {
+        if (
+            !friendId ||
+            isOptOut.value ||
+            !String(friendId).startsWith('usr_')
+        ) {
             return { success: false, mutuals: [], optedOut: false };
         }
 
@@ -257,7 +275,9 @@ export const useChartsStore = defineStore('Charts', () => {
         mutualGraphStatus.hasFetched = false;
         Object.assign(mutualGraphFetchState, { processedFriends: 0 });
 
-        const friendSnapshot = Array.from(friendStore.friends.values());
+        const friendSnapshot = Array.from(friendStore.friends.values()).filter(
+            isVrchatMutualEligibleFriend
+        );
         const mutualMap = new Map();
         const metaEntries = new Map();
 

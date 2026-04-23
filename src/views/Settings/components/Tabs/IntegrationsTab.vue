@@ -142,9 +142,27 @@
             </SettingsItem>
         </SettingsGroup>
 
+        <!-- Resonite Integration -->
+        <SettingsGroup :title="t('view.settings.integrations.resonite.header')">
+            <SettingsItem
+                :label="t('view.settings.integrations.resonite.enable')"
+                :description="t('view.settings.integrations.resonite.enable_tooltip')">
+                <Switch
+                    :model-value="resoniteIntegration"
+                    @update:modelValue="changeResoniteIntegration" />
+            </SettingsItem>
+
+            <SettingsItem :label="t('view.settings.integrations.resonite.configure')">
+                <Button size="sm" variant="outline" @click="showResoniteIntegrationDialog" :disabled="!resoniteIntegration">{{
+                    t('view.settings.integrations.resonite.configure')
+                }}</Button>
+            </SettingsItem>
+        </SettingsGroup>
+
         <TranslationApiDialog v-model:isTranslationApiDialogVisible="isTranslationApiDialogVisible" />
         <YouTubeApiDialog v-model:isYouTubeApiDialogVisible="isYouTubeApiDialogVisible" />
         <AvatarProviderDialog v-model:isAvatarProviderDialogVisible="isAvatarProviderDialogVisible" />
+        <ResoniteIntegrationDialog v-model:isResoniteIntegrationDialogVisible="isResoniteIntegrationDialogVisible" />
     </div>
 </template>
 
@@ -166,6 +184,7 @@
     import AvatarProviderDialog from '../../dialogs/AvatarProviderDialog.vue';
     import TranslationApiDialog from '../../dialogs/TranslationApiDialog.vue';
     import YouTubeApiDialog from '../../dialogs/YouTubeApiDialog.vue';
+    import ResoniteIntegrationDialog from '../../dialogs/ResoniteIntegrationDialog.vue';
     import SettingsGroup from '../SettingsGroup.vue';
     import SettingsItem from '../SettingsItem.vue';
 
@@ -199,15 +218,16 @@
 
     const { showVRChatConfig } = advancedSettingsStore;
 
-    const { avatarRemoteDatabase, youTubeApi, translationApi } = storeToRefs(advancedSettingsStore);
+    const { avatarRemoteDatabase, youTubeApi, translationApi, resoniteIntegration } = storeToRefs(advancedSettingsStore);
 
-    const { setAvatarRemoteDatabase } = advancedSettingsStore;
+    const { setAvatarRemoteDatabase, setResoniteIntegration } = advancedSettingsStore;
 
     const { isAvatarProviderDialogVisible } = storeToRefs(useAvatarProviderStore());
     const { showAvatarProviderDialog } = useAvatarProviderStore();
 
     const isYouTubeApiDialogVisible = ref(false);
     const isTranslationApiDialogVisible = ref(false);
+    const isResoniteIntegrationDialogVisible = ref(false);
 
     /**
      *
@@ -221,6 +241,13 @@
      */
     function showTranslationApiDialog() {
         isTranslationApiDialogVisible.value = true;
+    }
+
+    /**
+     *
+     */
+    function showResoniteIntegrationDialog() {
+        isResoniteIntegrationDialogVisible.value = true;
     }
 
     /**
@@ -243,5 +270,12 @@
         if (configKey === 'VRCX_translationAPI') {
             advancedSettingsStore.setTranslationApi();
         }
+    }
+
+    /**
+     *
+     */
+    async function changeResoniteIntegration() {
+        await setResoniteIntegration(!resoniteIntegration.value);
     }
 </script>

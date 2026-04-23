@@ -205,7 +205,8 @@ vi.mock('../../../../components/Location.vue', () => ({
 vi.mock('../FriendItem.vue', () => ({
     default: {
         props: ['friend'],
-        template: '<div data-testid="friend-item">{{ friend.id }}</div>'
+        template:
+            '<div data-testid="friend-item">{{ friend.id }}|{{ friend.ref?.resonite?.currentSessionHash || "" }}</div>'
     }
 }));
 
@@ -256,6 +257,7 @@ describe('FriendsSidebar.vue', () => {
         mocks.appearanceStore.sidebarFavoriteGroups.value = [];
         mocks.appearanceStore.sidebarFavoriteGroupOrder.value = [];
         mocks.appearanceStore.sidebarSortMethods.value = [];
+        mocks.userStore.currentUser.value.$resonitePresence = null;
 
         mocks.configRepository.getBool.mockImplementation(
             (_key, defaultValue) => Promise.resolve(defaultValue ?? false)
@@ -316,5 +318,29 @@ describe('FriendsSidebar.vue', () => {
         expect(wrapper.text()).toContain('side_panel.same_instance');
         expect(wrapper.findAll('[data-testid="friend-item"]').length).toBe(2);
         expect(wrapper.text()).toContain('(2)');
+    });
+
+    test('renders Resonite Me through the shared friend item path', async () => {
+        mocks.userStore.currentUser.value.$resonitePresence = {
+            isActive: true,
+            linkedUserId: 'U-self',
+            linkedDisplayName: 'Resonite Me',
+            status: 'active',
+            state: 'online',
+            statusDescription: '<color=orange>Building</color>',
+            locationName: '<color=cyan>My World</color>',
+            currentSessionHash: 'S-self',
+            currentSessionName: 'My World',
+            avatarUrl: 'https://example.com/resonite-me.png'
+        };
+
+        const wrapper = mount(FriendsSidebar);
+        await flushPromises();
+        await nextTick();
+
+        const friendItems = wrapper.findAll('[data-testid="friend-item"]');
+        expect(friendItems).toHaveLength(1);
+        expect(friendItems[0].text()).toContain('resonite:U-self');
+        expect(friendItems[0].text()).toContain('S-self');
     });
 });

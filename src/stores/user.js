@@ -141,7 +141,8 @@ export const useUserStore = defineStore('User', () => {
         $trustSortNum: 1,
         $languages: [],
         $locationTag: '',
-        $travelingToLocation: ''
+        $travelingToLocation: '',
+        $resonitePresence: null
     });
 
     const userDialog = ref({
@@ -153,6 +154,7 @@ export const useUserStore = defineStore('User', () => {
         ref: {},
         friend: {},
         isFriend: false,
+        isExternal: false,
         note: '',
         incomingRequest: false,
         outgoingRequest: false,
@@ -486,7 +488,7 @@ export const useUserStore = defineStore('User', () => {
         }
         if (!L.isOffline) {
             for (friend of friendStore.friends.values()) {
-                if (typeof friend.ref === 'undefined') {
+                if (!friend?.ref?.$location) {
                     continue;
                 }
                 if (
@@ -495,7 +497,7 @@ export const useUserStore = defineStore('User', () => {
                     // don't add friends to currentUser gameLog instance (except when traveling)
                     continue;
                 }
-                if (friend.ref.$location.tag === L.tag) {
+                if (friend.ref.$location?.tag === L.tag) {
                     if (
                         friend.state !== 'online' &&
                         friend.ref.location === 'private'

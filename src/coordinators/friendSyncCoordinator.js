@@ -57,6 +57,8 @@ export async function runInitFriendsListFlow(t) {
         }
     }
 
+    await friendStore.hydratePersistedResoniteState();
+
     // bulk sync friends to search index after initial load
     for (const ctx of friendStore.friends.values()) {
         syncFriendSearchIndex(ctx);

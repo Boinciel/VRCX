@@ -23,6 +23,10 @@ import {
     userRequest
 } from '../api';
 import { processBulk, request } from '../services/request';
+import {
+    fetchResoniteUserProfiles,
+    mergeResoniteUserProfile
+} from '../services/resoniteFriends';
 import { AppDebug } from '../services/appConfig';
 import { database } from '../services/database';
 import { patchUserFromEvent } from '../queries';
@@ -41,6 +45,7 @@ import { runUpdateFriendFlow } from './friendPresenceCoordinator';
 import { userOnFriend } from './friendRelationshipCoordinator';
 import { handleGroupRepresented } from './groupCoordinator';
 import { useAppearanceSettingsStore } from '../stores/settings/appearance';
+import { useAdvancedSettingsStore } from '../stores/settings/advanced';
 import { useAuthStore } from '../stores/auth';
 import { useAvatarStore } from '../stores/avatar';
 import { useFavoriteStore } from '../stores/favorite';
@@ -164,6 +169,7 @@ export function applyUser(json) {
         currentTravelers.delete(ref.id);
     }
     if (
+        ref?.$location?.tag &&
         !instanceStore.cachedInstances.has(ref.$location.tag) &&
         isRealInstance(ref.location)
     ) {
@@ -293,22 +299,57 @@ export function showUserDialog(userId) {
     const moderationStore = useModerationStore();
     const favoriteStore = useFavoriteStore();
     const locationStore = useLocationStore();
+    const advancedSettingsStore = useAdvancedSettingsStore();
     const appearanceSettingsStore = useAppearanceSettingsStore();
     const t = i18n.global.t;
 
     const { currentUser, userDialog, showUserDialogHistory } = userStore;
+    const prefixedResoniteId =
+        userId.startsWith('resonite:') || userId.startsWith('usr_')
+            ? userId
+            : `resonite:${userId}`;
+    const friendCtx =
+        friendStore.friends.get(userId) ||
+        friendStore.friends.get(prefixedResoniteId);
+    const isExternalUser =
+        userId.startsWith('resonite:') ||
+        /^[uU]-/.test(userId) ||
+        friendCtx?.provider === 'resonite' ||
+        friendCtx?.isExternal === true;
+    const isCurrentResoniteSelf =
+        isExternalUser &&
+        isCurrentResoniteSelfUser(
+            userId,
+            currentUser,
+            advancedSettingsStore.resoniteApiKey
+        );
 
     const isMainDialogOpen = uiStore.openDialog({
         type: 'user',
         id: userId
     });
     const D = userDialog;
-    D.visible = true;
     if (isMainDialogOpen && D.id === userId) {
+        D.visible = true;
+        if (isExternalUser) {
+            void refreshResoniteUserProfileOnOpen({
+                externalId: String(friendCtx?.id || prefixedResoniteId).trim(),
+                resoniteUserId: stripResonitePrefix(
+                    String(friendCtx?.id || prefixedResoniteId).trim()
+                ),
+                isCurrentResoniteSelf,
+                friendCtx,
+                dialogRef: D.ref,
+                friendStore,
+                apiKey: advancedSettingsStore.resoniteApiKey
+            });
+        }
         uiStore.setDialogCrumbLabel('user', D.id, D.ref?.displayName || D.id);
         userStore.applyUserDialogLocation(true);
         return;
     }
+    D.loading = true;
+    D.visible = true;
     D.id = userId;
     D.memo = '';
     D.note = '';
@@ -328,7 +369,6 @@ export function showUserDialog(userId) {
         }
     });
 
-    D.loading = true;
     D.avatars = [];
     D.worlds = [];
     D.instance = {
@@ -371,6 +411,175 @@ export function showUserDialog(userId) {
     D.dateFriendedInfo = [];
     D.mutualFriendCount = 0;
     D.mutualGroupCount = 0;
+    D.isExternal = false;
+
+    if (isExternalUser) {
+        const now = Date.now();
+        const externalId = String(friendCtx?.id || '').startsWith('resonite:')
+            ? String(friendCtx?.id || '')
+            : prefixedResoniteId;
+        const selfResonitePresence = isCurrentResoniteSelf
+            ? currentUser.$resonitePresence || null
+            : null;
+        const hasResoniteContactRelationship =
+            !isCurrentResoniteSelf && isResoniteContactLike(friendCtx);
+        const displayName =
+            String(
+                friendCtx?.ref?.displayName ||
+                    friendCtx?.name ||
+                    selfResonitePresence?.linkedDisplayName ||
+                    ''
+            ) || userId;
+        const avatarUrl = String(
+            friendCtx?.ref?.profilePicOverrideThumbnail ||
+                friendCtx?.ref?.profilePicOverride ||
+                friendCtx?.ref?.profileImageUrl ||
+                friendCtx?.ref?.userIcon ||
+                selfResonitePresence?.avatarUrl ||
+                ''
+        );
+        const location = String(
+            friendCtx?.ref?.location || selfResonitePresence?.locationName || ''
+        );
+        const status = String(
+            friendCtx?.ref?.status || selfResonitePresence?.status || 'busy'
+        );
+        const statusDescription = String(
+            friendCtx?.ref?.statusDescription ||
+                selfResonitePresence?.statusDescription ||
+                ''
+        );
+        const resonite =
+            friendCtx?.resonite ||
+            friendCtx?.ref?.resonite ||
+            selfResonitePresence
+                ? {
+                      ...(friendCtx?.resonite || {}),
+                      ...(friendCtx?.ref?.resonite || {}),
+                      ...(selfResonitePresence
+                          ? {
+                                userId: String(
+                                    selfResonitePresence.linkedUserId || ''
+                                ).trim(),
+                                locationName: String(
+                                    selfResonitePresence.locationName || ''
+                                ).trim(),
+                                currentSessionName: String(
+                                    selfResonitePresence.currentSessionName ||
+                                        ''
+                                ).trim(),
+                                currentSessionHash: String(
+                                    selfResonitePresence.currentSessionHash ||
+                                        ''
+                                ).trim(),
+                                outputDevice: String(
+                                    selfResonitePresence.outputDevice || ''
+                                ).trim(),
+                                appVersion: String(
+                                    selfResonitePresence.appVersion || ''
+                                ).trim()
+                            }
+                          : {})
+                  }
+                : undefined;
+
+        D.loading = false;
+        D.isExternal = true;
+        D.id = externalId;
+        D.ref = reactive(
+            createDefaultUserRef({
+                id: externalId,
+                displayName,
+                isFriend: hasResoniteContactRelationship,
+                state: friendCtx?.state || 'offline',
+                status,
+                statusDescription,
+                location,
+                travelingToLocation: String(friendCtx?.ref?.traveling || ''),
+                last_activity: String(friendCtx?.ref?.last_activity || ''),
+                last_login: String(friendCtx?.ref?.last_login || ''),
+                currentAvatarImageUrl: avatarUrl,
+                currentAvatarThumbnailImageUrl: avatarUrl,
+                userIcon: avatarUrl,
+                profilePicOverrideThumbnail: '',
+                profilePicOverride: '',
+                bio: '',
+                tags: [],
+                $location_at: Number(friendCtx?.ref?.$location_at || now),
+                $online_for: friendCtx?.ref?.$online_for || '',
+                $travelingToTime: Number(
+                    friendCtx?.ref?.$travelingToTime || now
+                ),
+                $offline_for: friendCtx?.ref?.$offline_for || null,
+                $active_for: friendCtx?.ref?.$active_for || '',
+                $previousLocation: String(
+                    friendCtx?.ref?.$previousLocation || ''
+                ),
+                $friendNumber: Number(friendCtx?.ref?.$friendNumber || 0),
+                $platform: String(friendCtx?.ref?.$platform || ''),
+                resonite
+            })
+        );
+        D.friend = hasResoniteContactRelationship ? friendCtx || null : null;
+        D.isFriend = hasResoniteContactRelationship;
+        D.note = '';
+        D.incomingRequest = false;
+        D.outgoingRequest = false;
+        D.isBlock = false;
+        D.isMute = false;
+        D.isInteractOff = false;
+        D.isMuteChat = false;
+        D.isFavorite = false;
+
+        database.getUserStats(D.ref, false).then((ref1) => {
+            if (ref1.userId === D.id) {
+                D.lastSeen = ref1.lastSeen;
+                D.joinCount = ref1.joinCount;
+                D.timeSpent = ref1.timeSpent;
+            }
+        });
+
+        if (hasResoniteContactRelationship) {
+            database
+                .getFriendLogHistoryForUserId(D.id, ['Friend', 'Unfriend'])
+                .then((userNotifications) => {
+                    const dateFriendedInfo = [];
+                    for (const notification of userNotifications) {
+                        if (notification.userId !== D.id) {
+                            continue;
+                        }
+                        if (
+                            notification.type === 'Friend' ||
+                            (notification.type === 'Unfriend' &&
+                                !appearanceSettingsStore.hideUnfriends)
+                        ) {
+                            dateFriendedInfo.unshift(notification);
+                        }
+                    }
+
+                    D.dateFriendedInfo = dateFriendedInfo;
+                    if (dateFriendedInfo.length > 0) {
+                        const latestFriendedInfo = dateFriendedInfo[0];
+                        D.unFriended = latestFriendedInfo.type === 'Unfriend';
+                        D.dateFriended = latestFriendedInfo.created_at;
+                    }
+                });
+        }
+
+        uiStore.setDialogCrumbLabel('user', D.id, D.ref?.displayName || D.id);
+        userStore.applyUserDialogLocation(true);
+        void refreshResoniteUserProfileOnOpen({
+            externalId,
+            resoniteUserId: stripResonitePrefix(externalId),
+            isCurrentResoniteSelf,
+            friendCtx,
+            dialogRef: D.ref,
+            friendStore,
+            apiKey: advancedSettingsStore.resoniteApiKey
+        });
+        return;
+    }
+
     if (userId === currentUser.id) {
         getWorldName(currentUser.homeLocation).then((worldName) => {
             D.$homeLocationName = worldName;
@@ -533,6 +742,252 @@ export function showUserDialog(userId) {
         });
     showUserDialogHistory.delete(userId);
     showUserDialogHistory.add(userId);
+}
+
+async function refreshResoniteUserProfileOnOpen({
+    externalId,
+    resoniteUserId,
+    isCurrentResoniteSelf = false,
+    friendCtx,
+    dialogRef,
+    friendStore,
+    apiKey
+}) {
+    const normalizedExternalId = String(externalId || '').trim();
+    const normalizedUserId = String(resoniteUserId || '').trim();
+    if (!normalizedExternalId || !normalizedUserId || !apiKey) {
+        return;
+    }
+
+    const profilesByUserId = await fetchResoniteUserProfiles(
+        [normalizedUserId],
+        {
+            apiKey,
+            force: true
+        }
+    );
+    const userProfile = profilesByUserId.get(normalizedUserId);
+    if (!userProfile) {
+        return;
+    }
+
+    const baseRef = dialogRef || friendCtx?.ref || {};
+    const baseResonite = {
+        ...(friendCtx?.resonite || {}),
+        ...(friendCtx?.ref?.resonite || {}),
+        ...(baseRef?.resonite || {})
+    };
+    const baseFriend = {
+        id: normalizedExternalId,
+        state:
+            String(friendCtx?.state || baseRef?.state || '').trim() ||
+            'offline',
+        status: String(friendCtx?.status || baseRef?.status || '').trim(),
+        name: String(
+            friendCtx?.name || baseRef?.displayName || normalizedUserId
+        ).trim(),
+        provider: 'resonite',
+        isExternal: true,
+        ref: {
+            id: normalizedExternalId,
+            displayName: String(
+                baseRef?.displayName || friendCtx?.name || normalizedUserId
+            ).trim(),
+            state:
+                String(baseRef?.state || friendCtx?.state || '').trim() ||
+                'offline',
+            status: String(baseRef?.status || friendCtx?.status || '').trim(),
+            location: String(baseRef?.location || '').trim(),
+            traveling: String(
+                friendCtx?.ref?.traveling || baseRef?.travelingToLocation || ''
+            ).trim(),
+            statusDescription: String(baseRef?.statusDescription || '').trim(),
+            currentAvatarImageUrl: String(
+                baseRef?.currentAvatarImageUrl ||
+                    baseRef?.profileImageUrl ||
+                    baseRef?.profilePicOverride ||
+                    baseRef?.userIcon ||
+                    ''
+            ).trim(),
+            currentAvatarThumbnailImageUrl: String(
+                baseRef?.currentAvatarThumbnailImageUrl ||
+                    baseRef?.profileImageUrl ||
+                    baseRef?.profilePicOverride ||
+                    baseRef?.userIcon ||
+                    ''
+            ).trim(),
+            profileImageUrl: String(
+                baseRef?.profileImageUrl ||
+                    baseRef?.profilePicOverride ||
+                    baseRef?.userIcon ||
+                    ''
+            ).trim(),
+            userIcon: String(
+                baseRef?.userIcon ||
+                    baseRef?.profileImageUrl ||
+                    baseRef?.profilePicOverride ||
+                    ''
+            ).trim(),
+            last_activity: String(baseRef?.last_activity || '').trim(),
+            last_login: String(baseRef?.last_login || '').trim(),
+            $location_at: Number(baseRef?.$location_at || 0),
+            $online_for: baseRef?.$online_for || '',
+            $travelingToTime: Number(baseRef?.$travelingToTime || 0),
+            $offline_for: baseRef?.$offline_for || null,
+            $active_for: baseRef?.$active_for || '',
+            $previousLocation: String(baseRef?.$previousLocation || '').trim(),
+            resonite: {
+                ...baseResonite,
+                userId: normalizedUserId,
+                locationName: String(baseResonite.locationName || '').trim(),
+                currentSessionHash: String(
+                    baseResonite.currentSessionHash ||
+                        baseResonite.realtime?.currentSessionHash ||
+                        ''
+                ).trim(),
+                currentSessionName: String(
+                    baseResonite.currentSessionName ||
+                        baseResonite.realtime?.currentSessionName ||
+                        ''
+                ).trim(),
+                userSessionId: String(
+                    baseResonite.userSessionId ||
+                        baseResonite.realtime?.userSessionId ||
+                        ''
+                ).trim(),
+                sessionType: String(
+                    baseResonite.sessionType ||
+                        baseResonite.realtime?.sessionType ||
+                        ''
+                ).trim(),
+                outputDevice: String(
+                    baseResonite.outputDevice ||
+                        baseResonite.realtime?.outputDevice ||
+                        ''
+                ).trim(),
+                appVersion: String(
+                    baseResonite.appVersion ||
+                        baseResonite.realtime?.appVersion ||
+                        ''
+                ).trim(),
+                compatibilityHash: String(
+                    baseResonite.compatibilityHash ||
+                        baseResonite.realtime?.compatibilityHash ||
+                        ''
+                ).trim(),
+                isPresent: Boolean(
+                    baseResonite.isPresent ?? baseResonite.realtime?.isPresent
+                ),
+                realtime: {
+                    ...(baseResonite.realtime || {})
+                },
+                profile: {
+                    ...(baseResonite.profile || {})
+                }
+            }
+        },
+        resonite: {
+            ...baseResonite,
+            userId: normalizedUserId,
+            realtime: {
+                ...(baseResonite.realtime || {})
+            },
+            profile: {
+                ...(baseResonite.profile || {})
+            }
+        }
+    };
+
+    const mergedFriend = mergeResoniteUserProfile(baseFriend, userProfile);
+    if (isCurrentResoniteSelf && dialogRef) {
+        Object.assign(dialogRef, {
+            ...mergedFriend.ref,
+            id: normalizedExternalId,
+            isFriend: false,
+            displayName: firstNonEmptyString(
+                dialogRef.displayName,
+                mergedFriend?.ref?.displayName,
+                mergedFriend?.name,
+                normalizedUserId
+            ),
+            statusDescription: firstNonEmptyString(
+                dialogRef.statusDescription,
+                mergedFriend?.ref?.statusDescription
+            ),
+            resonite: mergedFriend.resonite
+        });
+        return;
+    }
+
+    friendStore.upsertResoniteFriend(
+        {
+            ...mergedFriend,
+            id: normalizedExternalId,
+            name: String(
+                mergedFriend?.name ||
+                    mergedFriend?.ref?.displayName ||
+                    userProfile.username ||
+                    normalizedUserId
+            ).trim(),
+            provider: 'resonite',
+            isExternal: true
+        },
+        {
+            emitFeed: false
+        }
+    );
+}
+
+function isResoniteContactLike(friendCtx) {
+    const resonite = friendCtx?.resonite || friendCtx?.ref?.resonite || {};
+
+    return Boolean(
+        friendCtx?.ref?.contactStatus ||
+        resonite.contactStatus ||
+        friendCtx?.ref?.contactUsername ||
+        resonite.contactUsername ||
+        friendCtx?.ref?.latestMessageTime ||
+        resonite.latestMessageTime ||
+        friendCtx?.ref?.isAccepted !== undefined ||
+        resonite.isAccepted !== undefined
+    );
+}
+
+function stripResonitePrefix(id) {
+    const normalizedId = String(id || '').trim();
+    return normalizedId.startsWith('resonite:')
+        ? normalizedId.slice('resonite:'.length)
+        : normalizedId;
+}
+
+function parseResoniteUserIdFromApiKey(apiKey) {
+    const normalizedApiKey = String(apiKey || '')
+        .trim()
+        .replace(/^res\s+/i, '');
+    if (!normalizedApiKey) {
+        return '';
+    }
+
+    const candidateUserId = normalizedApiKey.split(':', 1)[0];
+    return /^[uU]-/.test(candidateUserId) ? candidateUserId : '';
+}
+
+function isCurrentResoniteSelfUser(userId, currentUser, apiKey) {
+    const normalizedTargetId = stripResonitePrefix(userId);
+    if (!normalizedTargetId) {
+        return false;
+    }
+
+    const presence = currentUser?.$resonitePresence || {};
+    const candidateIds = [
+        presence.linkedUserId,
+        presence.linkedContactId,
+        parseResoniteUserIdFromApiKey(apiKey)
+    ]
+        .map((candidateId) => stripResonitePrefix(candidateId))
+        .filter(Boolean);
+
+    return candidateIds.includes(normalizedTargetId);
 }
 
 /**

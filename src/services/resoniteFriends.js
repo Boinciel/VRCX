@@ -1,0 +1,1050 @@
+import webApiService from './webapi';
+import { useAdvancedSettingsStore } from '../stores';
+import {
+    buildResoniteAuthorizationHeader,
+    ensureResoniteSessionIsFresh
+} from './resoniteAuth';
+import { convertFileUrlToImageUrl } from '../shared/utils/common';
+
+const RESONITE_USER_PROFILE_CACHE_TTL_MS = 10 * 60 * 1000;
+const resoniteUserProfileCache = new Map();
+
+export {
+    buildResoniteAuthorizationHeader,
+    createResoniteSession
+} from './resoniteAuth';
+
+export { RESONITE_USER_PROFILE_CACHE_TTL_MS };
+
+/**
+ * @returns {Promise<{success: boolean, friends: Object[]}>}
+ */
+export async function fetchResoniteFriends() {
+    const advancedSettingsStore = useAdvancedSettingsStore();
+
+    const endpoint = advancedSettingsStore.resoniteFriendsEndpoint;
+
+    if (!endpoint) {
+        console.warn(
+            '[ResoniteIntegration] Endpoint not configured, skipping fetch'
+        );
+        return {
+            success: false,
+            friends: []
+        };
+    }
+
+    try {
+        await ensureResoniteSessionIsFresh();
+        const apiKey = advancedSettingsStore.resoniteApiKey;
+        const headers = {};
+
+        if (apiKey) {
+            headers['Authorization'] = buildResoniteAuthorizationHeader(apiKey);
+        }
+
+        const response = await webApiService.execute({
+            url: endpoint,
+            method: 'GET',
+            headers
+        });
+
+        if (response.status !== 200) {
+            console.warn(
+                `[ResoniteIntegration] Fetch failed with status ${response.status}: ${response.data}`
+            );
+            return {
+                success: false,
+                friends: []
+            };
+        }
+
+        let payload;
+        try {
+            payload = JSON.parse(response.data);
+        } catch (e) {
+            console.error(
+                '[ResoniteIntegration] Failed to parse endpoint response as JSON',
+                e
+            );
+            return {
+                success: false,
+                friends: []
+            };
+        }
+
+        console.debug(
+            '[ResoniteIntegration] Raw payload from endpoint:',
+            JSON.stringify(payload, null, 2)
+        );
+
+        const normalized = normalizeResoniteFriends(payload);
+        const enriched = await enrichResoniteFriendsWithUserProfiles(
+            normalized,
+            {
+                apiBaseUrl: getResoniteApiBaseUrl(endpoint),
+                headers
+            }
+        );
+        console.debug(
+            `[ResoniteIntegration] Normalized ${enriched.length} friends:`,
+            JSON.stringify(enriched, null, 2)
+        );
+        return {
+            success: true,
+            friends: enriched
+        };
+    } catch (error) {
+        console.error('[ResoniteIntegration] Error fetching friends:', error);
+        return {
+            success: false,
+            friends: []
+        };
+    }
+}
+
+/**
+ * @param {any} payload
+ * @returns {Object[]}
+ */
+export function normalizeResoniteFriends(payload) {
+    if (!payload) {
+        console.warn('[ResoniteIntegration] Payload is null or undefined');
+        return [];
+    }
+
+    let friendsArray = null;
+
+    if (Array.isArray(payload)) {
+        friendsArray = payload;
+    } else if (typeof payload === 'object' && Array.isArray(payload.friends)) {
+        friendsArray = payload.friends;
+    } else if (typeof payload === 'object' && Array.isArray(payload.contacts)) {
+        friendsArray = payload.contacts;
+    } else if (
+        typeof payload === 'object' &&
+        Array.isArray(payload?.entity?.friends)
+    ) {
+        friendsArray = payload.entity.friends;
+    } else if (
+        typeof payload === 'object' &&
+        Array.isArray(payload?.entity?.contacts)
+    ) {
+        friendsArray = payload.entity.contacts;
+    }
+
+    if (!friendsArray) {
+        console.warn(
+            '[ResoniteIntegration] Payload does not contain friends array at root or .friends'
+        );
+        return [];
+    }
+
+    const normalized = [];
+    let presenceSignalsCount = 0;
+    let contactsLikeCount = 0;
+
+    for (const entry of friendsArray) {
+        try {
+            if (hasPresenceSignals(entry)) {
+                presenceSignalsCount += 1;
+            }
+            if (isContactsLikeEntry(entry)) {
+                contactsLikeCount += 1;
+            }
+            const normalizedEntry = normalizeResoniteFriend(entry);
+            if (normalizedEntry) {
+                normalized.push(normalizedEntry);
+            }
+        } catch (error) {
+            console.error(
+                '[ResoniteIntegration] Error normalizing friend entry:',
+                error,
+                entry
+            );
+        }
+    }
+
+    if (normalized.length > 0 && presenceSignalsCount === 0) {
+        console.warn(
+            `[ResoniteIntegration] Payload appears to be contacts-only (normalized=${normalized.length}, contactsLike=${contactsLikeCount}) with no presence/status/session fields. Entries will default to offline. Configure an endpoint/data source that includes presence details (e.g. onlineStatus/userStatus/currentSession).`
+        );
+    }
+
+    return normalized;
+}
+
+/**
+ * @param {Object} entry
+ * @returns {Object|null}
+ */
+export function normalizeResoniteFriend(entry) {
+    if (!entry || typeof entry !== 'object') {
+        console.warn('[ResoniteIntegration] Entry is not an object:', entry);
+        return null;
+    }
+
+    const payload = firstObject(entry.entity, entry);
+    const userStatus = firstObject(entry.userStatus, payload?.userStatus);
+    const profile = firstObject(entry.profile, payload?.profile);
+    const currentSession = firstObject(
+        entry.currentSession,
+        payload?.currentSession,
+        userStatus?.currentSession
+    );
+    const sessions = firstArray(
+        entry.sessions,
+        payload?.sessions,
+        userStatus?.sessions,
+        userStatus?.decodedSessions
+    );
+    const primarySessionMetadata = firstObject(
+        sessions[0],
+        entry.session,
+        payload?.session,
+        userStatus?.session
+    );
+
+    const id = firstNonEmptyString(
+        entry.id,
+        entry.userId,
+        entry.contactUserId,
+        entry.contact?.id,
+        entry.user?.id,
+        userStatus?.userId,
+        entry.entity?.id,
+        entry.entity?.userId,
+        payload?.id,
+        payload?.userId,
+        payload?.contactUserId,
+        payload?.contact?.id
+    );
+
+    const rawDisplayName = firstNonEmptyString(
+        entry.displayName,
+        entry.username,
+        entry.name,
+        entry.contactDisplayName,
+        entry.contactUsername,
+        entry.contact?.displayName,
+        entry.contact?.username,
+        entry.contact?.name,
+        entry.user?.displayName,
+        entry.user?.username,
+        entry.user?.name,
+        entry.entity?.displayName,
+        entry.entity?.username,
+        entry.entity?.name,
+        entry.entity?.contactUsername,
+        entry.entity?.contactDisplayName,
+        payload?.displayName,
+        payload?.username,
+        payload?.name,
+        payload?.contactDisplayName,
+        payload?.contactUsername,
+        payload?.contact?.displayName,
+        payload?.contact?.username,
+        payload?.contact?.name,
+        profile?.displayName,
+        profile?.username,
+        profile?.name
+    );
+
+    const status =
+        normalizeStatus(
+            firstDefined(
+                entry.status,
+                entry.onlineStatus,
+                entry.userStatus?.onlineStatus,
+                entry.entity?.status,
+                entry.entity?.onlineStatus,
+                payload?.status,
+                payload?.onlineStatus,
+                userStatus?.onlineStatus
+            )
+        ) || 'offline';
+
+    const statusDescription =
+        firstNonEmptyString(
+            entry.statusDescription,
+            entry.statusMessage,
+            entry.userStatus?.statusDescription,
+            entry.entity?.statusDescription,
+            entry.entity?.statusMessage,
+            payload?.statusDescription,
+            payload?.statusMessage,
+            profile?.tagline,
+            profile?.description,
+            currentSession?.description,
+            primarySessionMetadata?.description
+        ) || '';
+
+    const profileImageUrl =
+        firstNonEmptyString(
+            entry.profileImageUrl,
+            entry.userIcon,
+            entry.iconUrl,
+            entry.imageUrl,
+            entry.entity?.profileImageUrl,
+            entry.entity?.userIcon,
+            entry.entity?.thumbnailUrl,
+            payload?.profileImageUrl,
+            payload?.userIcon,
+            payload?.thumbnailUrl,
+            profile?.iconUrl,
+            profile?.profileImageUrl,
+            profile?.imageUrl,
+            currentSession?.thumbnailUrl
+        ) || '';
+    const normalizedProfileImageUrl = convertFileUrlToImageUrl(profileImageUrl);
+
+    const locationName =
+        firstNonEmptyString(
+            entry.locationName,
+            entry.location,
+            entry.sessionName,
+            entry.entity?.locationName,
+            entry.entity?.location,
+            payload?.locationName,
+            payload?.location,
+            payload?.sessionName,
+            currentSession?.name,
+            currentSession?.sessionName,
+            currentSession?.locationName,
+            primarySessionMetadata?.name,
+            primarySessionMetadata?.sessionName
+        ) || '';
+
+    const ownerId = firstNonEmptyString(
+        entry.ownerId,
+        payload?.ownerId,
+        entry.owner?.id,
+        payload?.owner?.id
+    );
+    const contactStatus = firstNonEmptyString(
+        entry.contactStatus,
+        payload?.contactStatus
+    );
+    const latestMessageTime = firstNonEmptyString(
+        entry.latestMessageTime,
+        payload?.latestMessageTime,
+        entry.lastSeen,
+        payload?.lastSeen,
+        userStatus?.lastPresenceTimestamp,
+        userStatus?.lastStatusChange
+    );
+    const profileTagline = firstNonEmptyString(
+        profile?.tagline,
+        payload?.tagline
+    );
+    const profileDescription = firstNonEmptyString(
+        profile?.description,
+        payload?.description
+    );
+    const username = firstNonEmptyString(
+        entry.contactUsername,
+        entry.username,
+        entry.user?.username,
+        entry.entity?.username,
+        payload?.contactUsername,
+        payload?.username,
+        profile?.username
+    );
+    const normalizedUsername = firstNonEmptyString(
+        entry.normalizedUsername,
+        entry.entity?.normalizedUsername,
+        payload?.normalizedUsername,
+        profile?.normalizedUsername
+    );
+    const registrationDate = firstNonEmptyString(
+        entry.registrationDate,
+        entry.entity?.registrationDate,
+        payload?.registrationDate
+    );
+    const tags = firstStringArray(entry.tags, payload?.tags, profile?.tags);
+    const isVerified = firstBoolean(
+        entry.isVerified,
+        entry.entity?.isVerified,
+        payload?.isVerified
+    );
+    const hasStructuredContactData = Boolean(
+        userStatus ||
+        profile ||
+        contactStatus ||
+        latestMessageTime ||
+        entry.contactUsername ||
+        entry.contactDisplayName ||
+        payload?.contactUsername ||
+        payload?.contactDisplayName
+    );
+    const displayName = rawDisplayName || (hasStructuredContactData ? id : '');
+    const userSessionId = firstNonEmptyString(
+        userStatus?.userSessionId,
+        entry.userSessionId,
+        payload?.userSessionId,
+        currentSession?.sessionId,
+        currentSession?.id,
+        primarySessionMetadata?.sessionId,
+        primarySessionMetadata?.sessionHash
+    );
+    const sessionType = firstNonEmptyString(
+        userStatus?.sessionType,
+        entry.sessionType,
+        payload?.sessionType
+    );
+    const outputDevice = firstNonEmptyString(
+        userStatus?.outputDevice,
+        entry.outputDevice,
+        payload?.outputDevice
+    );
+    const appVersion = firstNonEmptyString(
+        userStatus?.appVersion,
+        entry.appVersion,
+        payload?.appVersion
+    );
+    const compatibilityHash = firstNonEmptyString(
+        userStatus?.compatibilityHash,
+        entry.compatibilityHash,
+        payload?.compatibilityHash
+    );
+    const isAccepted = firstBoolean(entry.isAccepted, payload?.isAccepted);
+    const isMobile = firstBoolean(
+        userStatus?.isMobile,
+        entry.isMobile,
+        payload?.isMobile
+    );
+    const isPresent = firstBoolean(
+        userStatus?.isPresent,
+        entry.isPresent,
+        payload?.isPresent
+    );
+
+    if (!id || typeof id !== 'string' || id.trim() === '') {
+        console.warn('[ResoniteIntegration] Entry missing valid id:', entry);
+        return null;
+    }
+
+    if (
+        !displayName ||
+        typeof displayName !== 'string' ||
+        displayName.trim() === ''
+    ) {
+        console.warn('[ResoniteIntegration] Entry missing valid displayName:', {
+            keys: Object.keys(entry || {}),
+            entityKeys:
+                entry?.entity && typeof entry.entity === 'object'
+                    ? Object.keys(entry.entity)
+                    : [],
+            entry
+        });
+        return null;
+    }
+
+    const isOnline = ['online', 'busy', 'away', 'sociable'].includes(
+        status?.toLowerCase()
+    );
+    const mappedVrcxStatus = mapResoniteStatusToVrcxStatus(status, isOnline);
+    const mappedVrcxLocation = locationName || (isOnline ? '' : 'offline');
+
+    const vrcxId = `resonite:${id}`;
+
+    const resonite = {
+        userId: id,
+        ownerId,
+        username,
+        normalizedUsername,
+        registrationDate,
+        isVerified,
+        tags,
+        contactStatus,
+        latestMessageTime,
+        isAccepted,
+        onlineStatus: status,
+        sessionType,
+        userSessionId,
+        outputDevice,
+        appVersion,
+        compatibilityHash,
+        isMobile,
+        isPresent,
+        locationName,
+        profile: {
+            iconUrl: normalizedProfileImageUrl,
+            tagline: profileTagline,
+            description: profileDescription
+        }
+    };
+
+    const friendContext = {
+        id: vrcxId,
+        name: displayName,
+        state: isOnline ? 'online' : 'offline',
+        isVIP: false,
+        pendingOffline: false,
+        provider: 'resonite',
+        isExternal: true,
+        ref: {
+            id: vrcxId,
+            displayName,
+            isFriend: true,
+            statusDescription: statusDescription || '',
+            state: isOnline ? 'online' : 'offline',
+            location: mappedVrcxLocation,
+            traveling: locationName || '',
+            profileImageUrl: normalizedProfileImageUrl || '',
+            userIcon: normalizedProfileImageUrl || '',
+            profilePicOverrideThumbnail: normalizedProfileImageUrl || '',
+            profilePicOverride: normalizedProfileImageUrl || '',
+            status: mappedVrcxStatus,
+            contactStatus: contactStatus || '',
+            latestMessageTime: latestMessageTime || '',
+            isAccepted,
+            resonite
+        },
+        resonite
+    };
+
+    console.debug(
+        '[ResoniteIntegration] Normalized friend entry:',
+        JSON.stringify(
+            {
+                id: friendContext.id,
+                name: friendContext.name,
+                state: friendContext.state,
+                status: friendContext.ref.status,
+                location: friendContext.ref.location,
+                statusDescription: friendContext.ref.statusDescription,
+                profileImageUrl: friendContext.ref.profileImageUrl,
+                rawInputKeys: Object.keys(entry),
+                rawStatus: status,
+                rawIsOnline: isOnline,
+                appVersion: friendContext.resonite.appVersion,
+                locationName: friendContext.resonite.locationName,
+                sessionType: friendContext.resonite.sessionType,
+                outputDevice: friendContext.resonite.outputDevice
+            },
+            null,
+            2
+        )
+    );
+
+    return friendContext;
+}
+
+async function enrichResoniteFriendsWithUserProfiles(friends, options) {
+    const { apiBaseUrl, headers } = options || {};
+
+    if (!Array.isArray(friends) || friends.length === 0) {
+        return [];
+    }
+
+    const enrichedFriends = [...friends];
+    const baseUrl = getResoniteApiBaseUrl(apiBaseUrl);
+    const pendingIndexes = [];
+
+    for (let index = 0; index < friends.length; index += 1) {
+        if (needsResoniteUserProfileEnrichment(friends[index], baseUrl)) {
+            pendingIndexes.push(index);
+        }
+    }
+
+    if (pendingIndexes.length === 0) {
+        return enrichedFriends;
+    }
+
+    const profilesByUserId = await fetchResoniteUserProfiles(
+        pendingIndexes
+            .map((index) =>
+                String(friends[index]?.resonite?.userId || '').trim()
+            )
+            .filter(Boolean),
+        {
+            apiBaseUrl: baseUrl,
+            headers
+        }
+    );
+
+    for (const index of pendingIndexes) {
+        const userId = String(friends[index]?.resonite?.userId || '').trim();
+        const userProfile = profilesByUserId.get(userId);
+        if (!userProfile) {
+            continue;
+        }
+
+        enrichedFriends[index] = mergeResoniteUserProfile(
+            enrichedFriends[index],
+            userProfile
+        );
+    }
+
+    return enrichedFriends;
+}
+
+function needsResoniteUserProfileEnrichment(friend, apiBaseUrl) {
+    if (!friend?.resonite?.userId) {
+        return false;
+    }
+
+    const hasRichProfileData = Boolean(
+        firstNonEmptyString(
+            friend?.ref?.profileImageUrl,
+            friend?.ref?.userIcon,
+            friend?.resonite?.profile?.iconUrl
+        ) &&
+        firstNonEmptyString(
+            friend?.resonite?.profile?.tagline,
+            friend?.resonite?.profile?.description
+        )
+    );
+
+    if (hasRichProfileData) {
+        return Boolean(
+            isResoniteUserProfileCacheStale(friend.resonite.userId, apiBaseUrl)
+        );
+    }
+
+    return Boolean(
+        isResoniteUserProfileCacheStale(friend.resonite.userId, apiBaseUrl) ||
+        !firstNonEmptyString(
+            friend?.ref?.profileImageUrl,
+            friend?.ref?.userIcon,
+            friend?.resonite?.profile?.iconUrl
+        ) ||
+        !String(friend?.resonite?.username || '').trim() ||
+        !String(friend?.resonite?.registrationDate || '').trim() ||
+        !String(friend?.resonite?.profile?.tagline || '').trim() ||
+        !String(friend?.resonite?.profile?.description || '').trim()
+    );
+}
+
+async function runResoniteProfileEnrichmentBatches(indexes, worker) {
+    const batchSize = 8;
+
+    for (let index = 0; index < indexes.length; index += batchSize) {
+        const batch = indexes.slice(index, index + batchSize);
+        await Promise.allSettled(batch.map((batchIndex) => worker(batchIndex)));
+    }
+}
+
+export async function fetchResoniteUserProfiles(userIds, options) {
+    const { apiBaseUrl, headers, apiKey, force = false } = options || {};
+
+    const baseUrl = getResoniteApiBaseUrl(apiBaseUrl);
+    const normalizedHeaders = {
+        ...(headers || {})
+    };
+
+    if (!normalizedHeaders.Authorization && apiKey) {
+        normalizedHeaders.Authorization =
+            buildResoniteAuthorizationHeader(apiKey);
+    }
+
+    const uniqueUserIds = [
+        ...new Set(
+            (Array.isArray(userIds) ? userIds : [])
+                .map((userId) => String(userId || '').trim())
+                .filter(Boolean)
+        )
+    ];
+
+    const profilesByUserId = new Map();
+    const uncachedUserIds = [];
+
+    for (const userId of uniqueUserIds) {
+        const cachedEntry = getResoniteUserProfileCacheEntry(userId, baseUrl);
+        if (
+            !force &&
+            cachedEntry &&
+            !isResoniteUserProfileCacheStale(userId, baseUrl)
+        ) {
+            profilesByUserId.set(userId, cachedEntry.value);
+            continue;
+        }
+        uncachedUserIds.push(userId);
+    }
+
+    if (uncachedUserIds.length === 0) {
+        return profilesByUserId;
+    }
+
+    await runResoniteProfileEnrichmentBatches(
+        uncachedUserIds,
+        async (userId) => {
+            const userProfile = await fetchResoniteUserProfile(userId, {
+                apiBaseUrl: baseUrl,
+                headers: normalizedHeaders,
+                force
+            });
+            if (userProfile) {
+                profilesByUserId.set(userId, userProfile);
+            }
+        }
+    );
+
+    return profilesByUserId;
+}
+
+async function fetchResoniteUserProfile(userId, options) {
+    const { apiBaseUrl, headers, force = false } = options || {};
+
+    const normalizedUserId = String(userId || '').trim();
+    if (!normalizedUserId) {
+        return null;
+    }
+
+    const baseUrl = getResoniteApiBaseUrl(apiBaseUrl);
+    const cacheKey = buildResoniteUserProfileCacheKey(
+        normalizedUserId,
+        baseUrl
+    );
+    const cachedEntry = getResoniteUserProfileCacheEntry(
+        normalizedUserId,
+        baseUrl
+    );
+    if (
+        cachedEntry &&
+        !force &&
+        !isResoniteUserProfileCacheStale(normalizedUserId, baseUrl)
+    ) {
+        return cachedEntry.value;
+    }
+
+    try {
+        const response = await webApiService.execute({
+            url: `${baseUrl}/users/${encodeURIComponent(normalizedUserId)}`,
+            method: 'GET',
+            headers: headers || {}
+        });
+
+        if (response.status !== 200) {
+            console.warn(
+                `[ResoniteIntegration] Failed to enrich user ${normalizedUserId} with profile details: ${response.status}`
+            );
+            return null;
+        }
+
+        const payload = JSON.parse(response.data);
+        resoniteUserProfileCache.set(cacheKey, {
+            fetchedAt: Date.now(),
+            value: payload
+        });
+        return payload;
+    } catch (error) {
+        console.warn(
+            `[ResoniteIntegration] Failed to enrich user ${normalizedUserId} with profile details`,
+            error
+        );
+        return null;
+    }
+}
+
+function getResoniteUserProfileCacheEntry(userId, apiBaseUrl) {
+    return resoniteUserProfileCache.get(
+        buildResoniteUserProfileCacheKey(userId, apiBaseUrl)
+    );
+}
+
+function buildResoniteUserProfileCacheKey(userId, apiBaseUrl) {
+    return `${getResoniteApiBaseUrl(apiBaseUrl)}|${String(userId || '').trim()}`;
+}
+
+function isResoniteUserProfileCacheStale(userId, apiBaseUrl) {
+    const cachedEntry = getResoniteUserProfileCacheEntry(userId, apiBaseUrl);
+    if (!cachedEntry) {
+        return true;
+    }
+
+    return (
+        Date.now() - cachedEntry.fetchedAt >= RESONITE_USER_PROFILE_CACHE_TTL_MS
+    );
+}
+
+export function mergeResoniteUserProfile(friend, userPayload) {
+    if (!friend || !userPayload || typeof userPayload !== 'object') {
+        return friend;
+    }
+
+    const profile = firstObject(userPayload.profile);
+    const profileIconUrl = convertFileUrlToImageUrl(
+        firstNonEmptyString(
+            profile?.iconUrl,
+            profile?.profileImageUrl,
+            profile?.imageUrl
+        )
+    );
+    const avatarUrl =
+        firstNonEmptyString(
+            profileIconUrl,
+            friend?.ref?.profileImageUrl,
+            friend?.ref?.userIcon,
+            friend?.resonite?.profile?.iconUrl
+        ) || '';
+    const profileTagline =
+        firstNonEmptyString(
+            profile?.tagline,
+            friend?.resonite?.profile?.tagline
+        ) || '';
+    const profileDescription =
+        firstNonEmptyString(
+            profile?.description,
+            friend?.resonite?.profile?.description
+        ) || '';
+    const statusDescription =
+        firstNonEmptyString(
+            friend?.ref?.statusDescription,
+            profileTagline,
+            profileDescription
+        ) || '';
+    const tags = firstStringArray(userPayload.tags, friend?.resonite?.tags);
+
+    const resonite = {
+        ...(friend?.resonite || {}),
+        username: firstNonEmptyString(
+            friend?.resonite?.username,
+            userPayload.username,
+            friend?.ref?.displayName
+        ),
+        normalizedUsername: firstNonEmptyString(
+            friend?.resonite?.normalizedUsername,
+            userPayload.normalizedUsername
+        ),
+        registrationDate: firstNonEmptyString(
+            friend?.resonite?.registrationDate,
+            userPayload.registrationDate
+        ),
+        isVerified: firstBoolean(
+            userPayload.isVerified,
+            friend?.resonite?.isVerified
+        ),
+        tags,
+        profile: {
+            ...(friend?.resonite?.profile || {}),
+            iconUrl: avatarUrl,
+            tagline: profileTagline,
+            description: profileDescription
+        }
+    };
+
+    return {
+        ...friend,
+        ref: {
+            ...(friend?.ref || {}),
+            currentAvatarImageUrl: avatarUrl,
+            currentAvatarThumbnailImageUrl: avatarUrl,
+            profileImageUrl: avatarUrl,
+            userIcon: avatarUrl,
+            profilePicOverrideThumbnail: '',
+            profilePicOverride: '',
+            statusDescription,
+            resonite
+        },
+        resonite
+    };
+}
+
+function getResoniteApiBaseUrl(endpoint) {
+    try {
+        return new URL(String(endpoint || 'https://api.resonite.com')).origin;
+    } catch {
+        return 'https://api.resonite.com';
+    }
+}
+
+function firstDefined(...values) {
+    for (const value of values) {
+        if (value !== undefined && value !== null) {
+            return value;
+        }
+    }
+    return undefined;
+}
+
+function firstObject(...values) {
+    for (const value of values) {
+        if (value && typeof value === 'object' && !Array.isArray(value)) {
+            return value;
+        }
+    }
+    return null;
+}
+
+function firstArray(...values) {
+    for (const value of values) {
+        if (Array.isArray(value)) {
+            return value;
+        }
+    }
+    return [];
+}
+
+function firstBoolean(...values) {
+    for (const value of values) {
+        if (typeof value === 'boolean') {
+            return value;
+        }
+    }
+    return false;
+}
+
+function firstStringArray(...values) {
+    for (const value of values) {
+        if (!Array.isArray(value)) {
+            continue;
+        }
+
+        const normalized = value
+            .map((entry) => String(entry || '').trim())
+            .filter(Boolean);
+        if (normalized.length > 0) {
+            return normalized;
+        }
+    }
+
+    return [];
+}
+
+function normalizeStatus(value) {
+    if (typeof value === 'number') {
+        return (
+            ['offline', 'invisible', 'away', 'busy', 'online', 'sociable'][
+                value
+            ] || ''
+        );
+    }
+
+    return extractMeaningfulString(value).toLowerCase();
+}
+
+function hasPresenceSignals(entry) {
+    if (!entry || typeof entry !== 'object') {
+        return false;
+    }
+
+    const payload = firstObject(entry.entity, entry);
+    const userStatus = firstObject(entry.userStatus, payload?.userStatus);
+    const currentSession = firstObject(
+        entry.currentSession,
+        payload?.currentSession,
+        userStatus?.currentSession
+    );
+    const sessions = firstArray(
+        entry.sessions,
+        payload?.sessions,
+        userStatus?.sessions,
+        userStatus?.decodedSessions
+    );
+
+    return Boolean(
+        firstDefined(
+            entry.status,
+            entry.onlineStatus,
+            entry.userStatus?.onlineStatus,
+            payload?.status,
+            payload?.onlineStatus,
+            userStatus?.onlineStatus,
+            currentSession?.id,
+            currentSession?.sessionId,
+            currentSession?.name,
+            payload?.locationName,
+            entry.locationName,
+            userStatus?.appVersion
+        ) ||
+        (Array.isArray(sessions) && sessions.length > 0)
+    );
+}
+
+function isContactsLikeEntry(entry) {
+    if (!entry || typeof entry !== 'object') {
+        return false;
+    }
+    return Boolean(
+        entry.contactStatus ||
+        entry.contactUsername ||
+        entry.isAccepted !== undefined ||
+        entry.latestMessageTime
+    );
+}
+
+function mapResoniteStatusToVrcxStatus(status, isOnline) {
+    const normalized = String(status || '')
+        .trim()
+        .toLowerCase();
+
+    if (normalized === 'sociable') {
+        return 'join me';
+    }
+    if (normalized === 'busy') {
+        return 'busy';
+    }
+    if (normalized === 'away') {
+        return 'ask me';
+    }
+    if (isOnline) {
+        return 'active';
+    }
+
+    return 'busy';
+}
+function firstNonEmptyString(...values) {
+    for (const value of values) {
+        const normalized = extractMeaningfulString(value);
+        if (normalized) {
+            return normalized;
+        }
+    }
+    return '';
+}
+
+function extractMeaningfulString(value) {
+    if (typeof value === 'string') {
+        const trimmed = value.trim();
+        return trimmed || '';
+    }
+
+    if (!value || typeof value !== 'object') {
+        return '';
+    }
+
+    const objectCandidates = [
+        value.displayName,
+        value.username,
+        value.name,
+        value.value,
+        value.text,
+        value.label
+    ];
+
+    for (const candidate of objectCandidates) {
+        if (typeof candidate === 'string') {
+            const trimmed = candidate.trim();
+            if (trimmed) {
+                return trimmed;
+            }
+        }
+    }
+
+    return '';
+}
+
+/**
+ * @param {Object} friendContext
+ * @returns {boolean}
+ */
+export function isValidResoniteFriendContext(friendContext) {
+    if (!friendContext || typeof friendContext !== 'object') {
+        return false;
+    }
+
+    return Boolean(
+        typeof friendContext.id === 'string' &&
+        friendContext.id.startsWith('resonite:') &&
+        typeof friendContext.name === 'string' &&
+        (friendContext.state === 'online' ||
+            friendContext.state === 'offline') &&
+        friendContext.provider === 'resonite' &&
+        friendContext.isExternal === true &&
+        friendContext.ref &&
+        typeof friendContext.ref.id === 'string' &&
+        typeof friendContext.ref.displayName === 'string'
+    );
+}

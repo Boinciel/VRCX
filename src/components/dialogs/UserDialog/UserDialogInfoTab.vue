@@ -1,20 +1,155 @@
 <template>
     <template v-if="isFriendOnline(userDialog.friend) || currentUser.id === userDialog.id">
+        <!-- ── Resonite external user: session info panel ── -->
         <div
+            v-if="userDialog.isExternal && userDialog.ref.location"
             class="mb-2 pb-2 border-b border-border"
-            v-if="userDialog.ref.location"
+            style="display: flex; flex-direction: column">
+            <div class="flex items-center gap-2 text-muted-foreground" style="flex: none">
+                <TooltipWrapper
+                    v-if="resoniteHasActionableSession"
+                    side="top"
+                    :content="t('dialog.user.info.launch_invite_tooltip')">
+                    <Button
+                        class="rounded-full w-6 h-6 text-xs text-muted-foreground hover:text-foreground"
+                        size="icon-sm"
+                        variant="outline"
+                        :disabled="!resoniteJoinUrl"
+                        @click="openResoniteSession">
+                        <LogIn class="h-4 w-4" />
+                    </Button>
+                </TooltipWrapper>
+
+                <TooltipWrapper
+                    v-if="resoniteHasActionableSession"
+                    side="top"
+                    :content="t('dialog.user.info.refresh_instance_info')">
+                    <Button
+                        class="rounded-full w-6 h-6 text-xs text-muted-foreground hover:text-foreground"
+                        size="icon"
+                        variant="outline"
+                        :disabled="isRefreshingResoniteSession"
+                        @click="refreshResoniteSessionInfo">
+                        <Loader2 v-if="isRefreshingResoniteSession" class="h-4 w-4 animate-spin" />
+                        <RefreshCw v-else class="h-4 w-4" />
+                    </Button>
+                </TooltipWrapper>
+
+                <span v-if="resoniteHasActionableSession" class="flex items-center gap-0.5">
+                    <UsersRound class="h-4 w-4" />
+                    {{ resoniteUsersInWorldCount }}
+                    <span v-if="resoniteSession?.maxUsers > 0">/{{ resoniteSession.maxUsers }}</span>
+                </span>
+
+                <TooltipWrapper
+                    v-if="resoniteHasActionableSession"
+                    side="top"
+                    :content="t('dialog.user.info.instance_friends_tooltip')">
+                    <span class="flex items-center gap-0.5">
+                        <UserPlus2 class="h-4 w-4" />
+                        {{ resoniteContactsInWorldCount }}
+                    </span>
+                </TooltipWrapper>
+            </div>
+            <div class="mt-2 flex items-baseline gap-2 text-sm" style="flex: none">
+                <span class="font-medium" v-html="renderResoniteRichText(resoniteSessionTitle)" />
+            </div>
+            <div v-if="resoniteSessionThumbnailUrl" class="mt-2" style="flex: none">
+                <Avatar
+                    class="cursor-pointer size-15! rounded-lg!"
+                    @click="showFullscreenImageDialog(resoniteSessionThumbnailUrl)">
+                    <AvatarImage :src="resoniteSessionThumbnailUrl" class="object-cover" />
+                    <AvatarFallback class="rounded-lg!">
+                        <Image class="size-5 text-muted-foreground" />
+                    </AvatarFallback>
+                </Avatar>
+            </div>
+            <!-- Session users grid (mirrors the VRChat instance users layout) -->
+            <div
+                v-if="resoniteSessionHost || resoniteSessionParticipantUsers.length > 0"
+                class="flex flex-wrap items-start"
+                style="flex: 1; margin-top: 8px; max-height: 150px; overflow: auto">
+                <div
+                    v-if="resoniteSessionHost"
+                    class="box-border flex items-center p-1.5 text-[13px] w-[167px]"
+                    :class="
+                        resoniteSessionHost.userID
+                            ? 'cursor-pointer hover:rounded-[25px_5px_5px_25px]'
+                            : 'cursor-default'
+                    "
+                    @click="openResoniteSessionUserDialog(resoniteSessionHost)">
+                    <div
+                        class="relative inline-block flex-none size-9 mr-2.5"
+                        :class="
+                            resoniteSessionHost.friend
+                                ? userStatusClass(resoniteSessionHost.friend.ref)
+                                : 'x-user-status'
+                        ">
+                        <Avatar class="size-9">
+                            <AvatarImage
+                                v-if="resoniteSessionHost.avatarUrl"
+                                :src="resoniteSessionHost.avatarUrl"
+                                class="object-cover" />
+                            <AvatarFallback>
+                                <User class="size-4 text-muted-foreground" />
+                            </AvatarFallback>
+                        </Avatar>
+                    </div>
+                    <div class="flex-1 overflow-hidden">
+                        <span
+                            class="block truncate font-medium leading-[18px]"
+                            :style="
+                                resoniteSessionHost.friend ? { color: resoniteSessionHost.friend.ref?.$userColour } : {}
+                            "
+                            v-html="renderResoniteRichText(resoniteSessionHost.displayName)" />
+                        <span class="block truncate text-xs">{{ t('dialog.user.info.instance_creator') }}</span>
+                    </div>
+                </div>
+                <div
+                    v-for="su in resoniteSessionParticipantUsers"
+                    :key="su.userID || su.username"
+                    class="box-border flex items-center p-1.5 text-[13px] w-[167px]"
+                    :class="su.userID ? 'cursor-pointer hover:rounded-[25px_5px_5px_25px]' : 'cursor-default'"
+                    @click="openResoniteSessionUserDialog(su)">
+                    <div
+                        class="relative inline-block flex-none size-9 mr-2.5"
+                        :class="su.friend ? userStatusClass(su.friend.ref) : 'x-user-status'">
+                        <Avatar class="size-9">
+                            <AvatarImage v-if="su.avatarUrl" :src="su.avatarUrl" class="object-cover" />
+                            <AvatarFallback>
+                                <User class="size-4 text-muted-foreground" />
+                            </AvatarFallback>
+                        </Avatar>
+                    </div>
+                    <div class="flex-1 overflow-hidden">
+                        <span
+                            class="block truncate font-medium leading-[18px]"
+                            :style="su.friend ? { color: su.friend.ref?.$userColour } : {}"
+                            v-html="renderResoniteRichText(su.displayName || su.username)" />
+                        <span class="block truncate text-xs text-muted-foreground">
+                            {{ su.isPresent ? 'Present' : 'Away' }}
+                        </span>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- ── VRChat user: existing instance panel ── -->
+        <div
+            v-else-if="!userDialog.isExternal && userDialog.ref.location"
+            class="mb-2 pb-2 border-b border-border"
             style="display: flex; flex-direction: column">
             <div style="flex: none">
-                <template v-if="isRealInstance(userDialog.$location.tag)">
+                <template v-if="isRealInstance(userDialog.$location?.tag)">
                     <InstanceActionBar
                         class="mb-1"
-                        :location="userDialog.$location.tag"
-                        :shortname="userDialog.$location.shortName"
+                        :location="userDialog.$location?.tag"
+                        :shortname="userDialog.$location?.shortName"
                         :currentlocation="lastLocation.location"
                         :instance="userDialog.instance.ref"
                         :friendcount="userDialog.instance.friendCount"
                         :refresh-tooltip="t('dialog.user.info.refresh_instance_info')"
-                        :on-refresh="() => refreshInstancePlayerCount(userDialog.$location.tag)" />
+                        :on-refresh="() => refreshInstancePlayerCount(userDialog.$location?.tag)" />
                 </template>
                 <Location
                     class="text-sm"
@@ -23,15 +158,15 @@
             </div>
             <div class="flex flex-wrap items-start" style="flex: 1; margin-top: 8px; max-height: 150px; overflow: auto">
                 <div
-                    v-if="userDialog.$location.userId"
+                    v-if="userDialog.$location?.userId"
                     class="box-border flex items-center p-1.5 text-[13px] cursor-pointer w-[167px] hover:rounded-[25px_5px_5px_25px]"
-                    @click="showUserDialog(userDialog.$location.userId)">
-                    <template v-if="userDialog.$location.user">
+                    @click="showUserDialog(userDialog.$location?.userId)">
+                    <template v-if="userDialog.$location?.user">
                         <div
                             class="relative inline-block flex-none size-9 mr-2.5"
-                            :class="userStatusClass(userDialog.$location.user)">
+                            :class="userStatusClass(userDialog.$location?.user)">
                             <Avatar class="size-9">
-                                <AvatarImage :src="userImage(userDialog.$location.user, true)" class="object-cover" />
+                                <AvatarImage :src="userImage(userDialog.$location?.user, true)" class="object-cover" />
                                 <AvatarFallback>
                                     <User class="size-4 text-muted-foreground" />
                                 </AvatarFallback>
@@ -40,12 +175,12 @@
                         <div class="flex-1 overflow-hidden">
                             <span
                                 class="block truncate font-medium leading-[18px]"
-                                :style="{ color: userDialog.$location.user.$userColour }"
-                                v-text="userDialog.$location.user.displayName"></span>
+                                :style="{ color: userDialog.$location?.user?.$userColour }"
+                                v-text="userDialog.$location?.user?.displayName"></span>
                             <span class="block truncate text-xs">{{ t('dialog.user.info.instance_creator') }}</span>
                         </div>
                     </template>
-                    <span v-else v-text="userDialog.$location.userId"></span>
+                    <span v-else v-text="userDialog.$location?.userId"></span>
                 </div>
                 <div
                     v-for="user in userDialog.users"
@@ -103,7 +238,31 @@
                 <pre class="text-xs font-[inherit] text-muted-foreground" v-else>—</pre>
             </div>
         </div>
-        <div class="box-border flex items-center p-1.5 text-[13px] w-full cursor-default">
+        <div v-if="isResoniteExternalUser" class="box-border flex items-center p-1.5 text-[13px] cursor-default w-full">
+            <div class="flex-1 overflow-hidden">
+                <span class="block truncate font-medium leading-[18px]">Resonite Tags</span>
+                <pre
+                    class="text-xs font-[inherit]"
+                    style="white-space: pre-wrap; margin: 0 0.5em 0 0; max-height: 120px; overflow-y: auto"
+                    >{{ resoniteTagsText }}</pre
+                >
+            </div>
+        </div>
+        <div
+            v-if="isResoniteExternalUser && resoniteProfileDescription"
+            class="box-border flex items-center p-1.5 text-[13px] w-full cursor-default">
+            <div class="flex-1 overflow-hidden">
+                <span class="block truncate font-medium leading-[18px]">Resonite Description</span>
+                <pre
+                    class="text-xs font-[inherit]"
+                    style="white-space: pre-wrap; margin: 0 0.5em 0 0; max-height: 210px; overflow-y: auto"
+                    >{{ resoniteProfileDescription }}</pre
+                >
+            </div>
+        </div>
+        <div
+            v-if="!isResoniteExternalUser"
+            class="box-border flex items-center p-1.5 text-[13px] w-full cursor-default">
             <div class="flex-1 overflow-hidden">
                 <span class="block truncate font-medium leading-[18px]">
                     {{
@@ -130,7 +289,9 @@
                 </div>
             </div>
         </div>
-        <div class="box-border flex items-center p-1.5 text-[13px] w-full cursor-default">
+        <div
+            v-if="!isResoniteExternalUser"
+            class="box-border flex items-center p-1.5 text-[13px] w-full cursor-default">
             <div class="flex-1 overflow-hidden">
                 <span class="block truncate font-medium leading-[18px]" style="margin-bottom: 6px">{{
                     t('dialog.user.info.represented_group')
@@ -171,7 +332,9 @@
                 <div v-else class="text-xs">-</div>
             </div>
         </div>
-        <div class="box-border flex items-center p-1.5 text-[13px] w-full cursor-default">
+        <div
+            v-if="!isResoniteExternalUser"
+            class="box-border flex items-center p-1.5 text-[13px] w-full cursor-default">
             <div class="flex-1 overflow-hidden">
                 <span class="block truncate font-medium leading-[18px]">{{ t('dialog.user.info.bio') }}</span>
                 <pre
@@ -220,7 +383,7 @@
                 </div>
             </div>
         </div>
-        <template v-if="currentUser.id !== userDialog.id">
+        <template v-if="showEncounterStats">
             <div class="box-border flex items-center p-1.5 text-[13px] cursor-default w-[167px]">
                 <div class="flex-1 overflow-hidden">
                     <span class="block truncate font-medium leading-[18px]">
@@ -320,15 +483,13 @@
                 </div>
             </TooltipWrapper>
         </div>
-        <div class="box-border flex items-center p-1.5 text-[13px] cursor-default w-[167px]">
+        <div v-if="userJoinDate" class="box-border flex items-center p-1.5 text-[13px] cursor-default w-[167px]">
             <div class="flex-1 overflow-hidden">
                 <span class="block truncate font-medium leading-[18px]">{{ t('dialog.user.info.date_joined') }}</span>
-                <span class="block truncate text-xs" v-text="userDialog.ref.date_joined"></span>
+                <span class="block truncate text-xs" v-text="userJoinDate"></span>
             </div>
         </div>
-        <div
-            v-if="currentUser.id !== userDialog.id"
-            class="box-border flex items-center p-1.5 text-[13px] cursor-default w-[167px]">
+        <div v-if="showFriendedInfo" class="box-border flex items-center p-1.5 text-[13px] cursor-default w-[167px]">
             <TooltipWrapper side="top" :disabled="userDialog.dateFriendedInfo.length < 2">
                 <template #content>
                     <template v-for="ref in userDialog.dateFriendedInfo" :key="ref.type">
@@ -347,7 +508,7 @@
                 </div>
             </TooltipWrapper>
         </div>
-        <template v-if="currentUser.id === userDialog.id">
+        <template v-if="currentUser.id === userDialog.id && !isResoniteExternalUser">
             <div
                 class="box-border flex items-center p-1.5 text-[13px] cursor-pointer w-[167px]"
                 @click="toggleAvatarCopying">
@@ -399,7 +560,7 @@
                 </div>
             </div>
         </template>
-        <template v-else>
+        <template v-else-if="!isResoniteExternalUser">
             <div class="box-border flex items-center p-1.5 text-[13px] cursor-default w-[167px]">
                 <div class="flex-1 overflow-hidden">
                     <span class="block truncate font-medium leading-[18px]">{{
@@ -470,7 +631,21 @@
 </template>
 
 <script setup>
-    import { Copy, Image, Info, Languages, MoreHorizontal, Pencil, Trash2, User } from 'lucide-vue-next';
+    import {
+        Copy,
+        Image,
+        Info,
+        Languages,
+        Loader2,
+        LogIn,
+        MoreHorizontal,
+        Pencil,
+        RefreshCw,
+        Trash2,
+        User,
+        UserPlus2,
+        UsersRound
+    } from 'lucide-vue-next';
     import {
         DropdownMenu,
         DropdownMenuContent,
@@ -478,7 +653,7 @@
         DropdownMenuTrigger
     } from '@/components/ui/dropdown-menu';
     import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
-    import { ref, watch } from 'vue';
+    import { computed, ref, watch } from 'vue';
     import { Button } from '@/components/ui/button';
     import { Spinner } from '@/components/ui/spinner';
     import { storeToRefs } from 'pinia';
@@ -496,11 +671,20 @@
         userOnlineFor,
         userOnlineForTimestamp
     } from '../../../shared/utils';
+    import { renderResoniteRichText } from '../../../shared/utils/resoniteRichText';
+    import { convertFileUrlToImageUrl } from '../../../shared/utils/common';
+    import { fetchResoniteUserProfiles } from '../../../services/resoniteFriends';
+    import {
+        getResoniteSessionByHash,
+        refreshResoniteSessionByHash,
+        resoniteSessionCacheVersion
+    } from '../../../services/resoniteRealtime';
     import { useUserDisplay } from '../../../composables/useUserDisplay';
     import { refreshInstancePlayerCount } from '../../../coordinators/instanceCoordinator';
     import {
         useAdvancedSettingsStore,
         useAppearanceSettingsStore,
+        useFriendStore,
         useGalleryStore,
         useInstanceStore,
         useLocationStore,
@@ -522,16 +706,471 @@
 
     const modalStore = useModalStore();
     const instanceStore = useInstanceStore();
+    const friendStore = useFriendStore();
 
     const { hideUserNotes, hideUserMemos } = storeToRefs(useAppearanceSettingsStore());
-    const { bioLanguage, translationApi, translationApiType } = storeToRefs(useAdvancedSettingsStore());
+    const { bioLanguage, translationApi, translationApiType, resoniteApiKey } = storeToRefs(useAdvancedSettingsStore());
     const { translateText } = useAdvancedSettingsStore();
     const { userDialog, currentUser } = storeToRefs(useUserStore());
     const { toggleSharedConnectionsOptOut, toggleDiscordFriendsOptOut } = useUserStore();
+    const { friends } = storeToRefs(useFriendStore());
 
     const { lastLocation } = storeToRefs(useLocationStore());
     const { showFullscreenImageDialog } = useGalleryStore();
     const { userImage, userStatusClass } = useUserDisplay();
+    let lastResoniteVisibleUserProfilesRequestId = 0;
+
+    // ── Resonite session info ──────────────────────────────────────────────────
+
+    const isResoniteExternalUser = computed(
+        () =>
+            userDialog.value.isExternal &&
+            String(userDialog.value.id || userDialog.value.ref?.id || '').startsWith('resonite:')
+    );
+    const isCurrentDialogSelf = computed(() => {
+        if (currentUser.value.id === userDialog.value.id) {
+            return true;
+        }
+
+        if (!isResoniteExternalUser.value) {
+            return false;
+        }
+
+        const dialogUserId = stripResonitePrefix(firstNonEmptyString(userDialog.value.id, userDialog.value.ref?.id));
+        if (!dialogUserId) {
+            return false;
+        }
+
+        const presence = currentUser.value?.$resonitePresence || {};
+        return [presence.linkedUserId, presence.linkedContactId]
+            .map((candidateId) => stripResonitePrefix(candidateId))
+            .filter(Boolean)
+            .includes(dialogUserId);
+    });
+
+    /** Full session object from the Resonite API, resolved when the session hash is known. */
+    const resoniteSession = computed(() => {
+        if (!isResoniteExternalUser.value) return null;
+        void resoniteSessionCacheVersion.value;
+        const hash =
+            userDialog.value.ref?.resonite?.currentSessionHash ||
+            userDialog.value.ref?.resonite?.realtime?.currentSessionHash ||
+            '';
+        return hash ? getResoniteSessionByHash(hash) : null;
+    });
+
+    /** Human-readable access level label (matches ReCon conventions). */
+    const resoniteAccessLevelLabel = computed(() => {
+        const level = String(resoniteSession.value?.accessLevel || '').toLowerCase();
+        const labels = {
+            private: 'Private',
+            lan: 'LAN',
+            contacts: 'Contacts only',
+            contactsplus: 'Contacts+',
+            registeredusers: 'Registered users',
+            anyone: 'Public'
+        };
+        return labels[level] || level || '';
+    });
+
+    const resonitePresenceLocation = computed(() =>
+        String(
+            userDialog.value.ref?.resonite?.locationName ||
+                userDialog.value.ref?.resonite?.currentSessionName ||
+                userDialog.value.ref?.location ||
+                ''
+        )
+            .trim()
+            .toLowerCase()
+    );
+
+    const resoniteHasActionableSession = computed(() => {
+        if (!isResoniteExternalUser.value) {
+            return false;
+        }
+
+        const state = String(userDialog.value.friend?.state || userDialog.value.ref?.state || '')
+            .trim()
+            .toLowerCase();
+
+        if (state === 'offline') {
+            return false;
+        }
+
+        if (
+            resonitePresenceLocation.value === 'private' ||
+            String(resoniteSession.value?.accessLevel || '')
+                .trim()
+                .toLowerCase() === 'private'
+        ) {
+            return false;
+        }
+
+        return Boolean(userDialog.value.ref?.location);
+    });
+
+    /** Resonite session title formatted like VRChat location title, e.g. "World · Friends+". */
+    const resoniteSessionTitle = computed(() => {
+        const baseTitle = String(
+            resoniteSession.value?.name ||
+                userDialog.value.ref?.resonite?.locationName ||
+                userDialog.value.ref?.resonite?.currentSessionName ||
+                userDialog.value.ref?.location ||
+                ''
+        ).trim();
+        const accessSuffix = String(resoniteAccessLevelLabel.value || '').trim();
+        if (!baseTitle) {
+            return accessSuffix;
+        }
+        if (!accessSuffix) {
+            return baseTitle;
+        }
+        return `${baseTitle} · ${accessSuffix}`;
+    });
+
+    /** Preferred session thumbnail URL from Resonite session payload. */
+    const resoniteSessionThumbnailUrl = computed(() =>
+        String(
+            resoniteSession.value?.thumbnailUrl ||
+                resoniteSession.value?.thumbnailURL ||
+                resoniteSession.value?.world?.thumbnailUrl ||
+                resoniteSession.value?.world?.thumbnailURL ||
+                ''
+        ).trim()
+    );
+
+    const resoniteVisibleUserProfiles = ref(new Map());
+
+    const resoniteVisibleUserIds = computed(() => {
+        const session = resoniteSession.value;
+        if (!session) {
+            return [];
+        }
+
+        return [
+            ...new Set(
+                [
+                    String(session.hostUserId || '').trim(),
+                    ...(Array.isArray(session.sessionUsers) ? session.sessionUsers : [])
+                        .map((sessionUser) => String(sessionUser?.userID || sessionUser?.id || '').trim())
+                        .filter(Boolean)
+                ].filter(Boolean)
+            )
+        ];
+    });
+
+    const resoniteProfile = computed(() => userDialog.value.ref?.resonite || {});
+
+    const resoniteTagsText = computed(() => {
+        const tags = Array.isArray(resoniteProfile.value?.tags)
+            ? resoniteProfile.value.tags.map((tag) => String(tag || '').trim()).filter(Boolean)
+            : [];
+        return tags.length ? tags.join(', ') : '-';
+    });
+
+    const resoniteProfileDescription = computed(() =>
+        String(resoniteProfile.value?.profile?.description || resoniteProfile.value?.profile?.tagline || '').trim()
+    );
+
+    const showEncounterStats = computed(() => {
+        if (isCurrentDialogSelf.value) {
+            return false;
+        }
+
+        return Boolean(
+            String(userDialog.value.lastSeen || '').trim() ||
+            Number(userDialog.value.joinCount || 0) > 0 ||
+            Number(userDialog.value.timeSpent || 0) > 0
+        );
+    });
+
+    const showFriendedInfo = computed(() => {
+        if (isCurrentDialogSelf.value) {
+            return false;
+        }
+
+        return Boolean(String(userDialog.value.dateFriended || '').trim());
+    });
+
+    const userJoinDate = computed(() =>
+        isResoniteExternalUser.value
+            ? formatDateFilter(String(resoniteProfile.value?.registrationDate || '').trim(), 'date')
+            : String(userDialog.value.ref?.date_joined || '').trim()
+    );
+
+    watch(
+        [isResoniteExternalUser, resoniteVisibleUserIds, resoniteApiKey],
+        async ([nextIsResoniteExternalUser, nextVisibleUserIds]) => {
+            const requestId = ++lastResoniteVisibleUserProfilesRequestId;
+
+            if (!nextIsResoniteExternalUser || !nextVisibleUserIds.length) {
+                resoniteVisibleUserProfiles.value = new Map();
+                return;
+            }
+
+            const profilesByUserId = await fetchResoniteUserProfiles(nextVisibleUserIds, {
+                apiKey: resoniteApiKey.value
+            });
+
+            if (requestId !== lastResoniteVisibleUserProfilesRequestId) {
+                return;
+            }
+
+            resoniteVisibleUserProfiles.value = profilesByUserId;
+        },
+        {
+            immediate: true
+        }
+    );
+
+    function getResoniteFriendByUserId(rawId) {
+        const normalizedId = String(rawId || '').trim();
+        if (!normalizedId) {
+            return null;
+        }
+
+        return friends.value.get(`resonite:${normalizedId}`) || friends.value.get(normalizedId) || null;
+    }
+
+    function getResoniteVisibleUserProfile(rawId) {
+        const normalizedId = String(rawId || '').trim();
+        if (!normalizedId) {
+            return null;
+        }
+
+        return resoniteVisibleUserProfiles.value.get(normalizedId) || null;
+    }
+
+    /**
+     * Merged list of session users from the Resonite API, with friend references
+     * cross-linked so known contacts can be clicked through to their user dialog.
+     * The `displayName` on each entry is the name that should be rendered (with
+     * Resonite colour tags); for known friends the friend's own displayName is
+     * preferred so we get their correct colour styling.
+     */
+    const resoniteSessionUsers = computed(() => {
+        const session = resoniteSession.value;
+        if (!session?.sessionUsers?.length) return [];
+
+        return session.sessionUsers.map((su) => {
+            const rawId = String(su.userID || su.id || '').trim();
+            const friend = getResoniteFriendByUserId(rawId);
+            const profile = getResoniteVisibleUserProfile(rawId);
+            return {
+                userID: rawId,
+                username: su.username || su.displayName || rawId,
+                displayName: friend?.name || su.username || su.displayName || profile?.username || rawId,
+                isPresent: Boolean(su.isPresent),
+                avatarUrl: firstNonEmptyString(
+                    friend?.ref?.profileImageUrl,
+                    friend?.ref?.userIcon,
+                    convertFileUrlToImageUrl(profile?.profile?.iconUrl)
+                ),
+                friend,
+                profile
+            };
+        });
+    });
+
+    const resoniteSessionHost = computed(() => {
+        const session = resoniteSession.value;
+        if (!session) {
+            return null;
+        }
+
+        const hostUserId = String(session.hostUserId || '').trim();
+        const friend = getResoniteFriendByUserId(hostUserId);
+        const profile = getResoniteVisibleUserProfile(hostUserId);
+        const displayName = String(friend?.name || session.hostUsername || profile?.username || hostUserId).trim();
+
+        if (!displayName) {
+            return null;
+        }
+
+        return {
+            userID: hostUserId,
+            displayName,
+            avatarUrl: firstNonEmptyString(
+                friend?.ref?.profileImageUrl,
+                friend?.ref?.userIcon,
+                convertFileUrlToImageUrl(profile?.profile?.iconUrl)
+            ),
+            friend,
+            profile
+        };
+    });
+
+    const resoniteSessionParticipantUsers = computed(() => {
+        const hostUserId = String(resoniteSessionHost.value?.userID || '').trim();
+        const participants = hostUserId
+            ? resoniteSessionUsers.value.filter((sessionUser) => String(sessionUser.userID || '').trim() !== hostUserId)
+            : resoniteSessionUsers.value.slice();
+
+        return participants.sort((left, right) => {
+            const leftRank = left.friend ? 0 : 1;
+            const rightRank = right.friend ? 0 : 1;
+            if (leftRank !== rightRank) {
+                return leftRank - rightRank;
+            }
+
+            return String(left.displayName || left.username || left.userID || '').localeCompare(
+                String(right.displayName || right.username || right.userID || '')
+            );
+        });
+    });
+
+    /** Current users in session. */
+    const resoniteUsersInWorldCount = computed(() => {
+        if (!resoniteSession.value) {
+            return 0;
+        }
+        const joinedUsers = Number(resoniteSession.value.joinedUsers);
+        if (Number.isFinite(joinedUsers) && joinedUsers > 0) {
+            return joinedUsers;
+        }
+        const totalActiveUsers = Number(resoniteSession.value.totalActiveUsers);
+        if (Number.isFinite(totalActiveUsers) && totalActiveUsers > 0) {
+            return totalActiveUsers;
+        }
+        return resoniteSessionUsers.value.length;
+    });
+
+    /** Contacts/friends currently in session. */
+    const resoniteContactsInWorldCount = computed(() => resoniteSessionUsers.value.filter((su) => su.friend).length);
+
+    /** Preferred join URL from sessionURLs. */
+    const resoniteJoinUrl = computed(() => {
+        const urls = Array.isArray(resoniteSession.value?.sessionURLs) ? resoniteSession.value.sessionURLs : [];
+        return urls.map((url) => String(url || '').trim()).find((url) => /^resonite:|^https?:\/\//i.test(url)) || '';
+    });
+
+    const isRefreshingResoniteSession = ref(false);
+
+    async function refreshResoniteSessionInfo() {
+        if (isRefreshingResoniteSession.value) {
+            return;
+        }
+        isRefreshingResoniteSession.value = true;
+        try {
+            await friendStore.refreshResoniteFriends();
+            const resonite = userDialog.value.ref?.resonite || {};
+            const sessionHash = String(
+                resonite.currentSessionHash || resonite.realtime?.currentSessionHash || ''
+            ).trim();
+            if (sessionHash) {
+                await refreshResoniteSessionByHash({
+                    sessionHash,
+                    userId: resonite.userId || userDialog.value.id,
+                    apiKey: resoniteApiKey.value,
+                    force: true
+                });
+            }
+        } finally {
+            isRefreshingResoniteSession.value = false;
+        }
+    }
+
+    function openResoniteSession() {
+        if (!resoniteJoinUrl.value) {
+            toast.error('No Resonite session URL available for this world.');
+            return;
+        }
+        AppApi.OpenLink(resoniteJoinUrl.value);
+    }
+
+    function openResoniteSessionUserDialog(sessionUser) {
+        const userId = String(sessionUser?.userID || '').trim();
+        if (!userId) {
+            return;
+        }
+
+        if (sessionUser?.friend?.id) {
+            showUserDialog(sessionUser.friend.id);
+            return;
+        }
+
+        const displayName = firstNonEmptyString(
+            sessionUser?.displayName,
+            sessionUser?.username,
+            sessionUser?.profile?.username,
+            userId
+        );
+        const avatarUrl = firstNonEmptyString(
+            sessionUser?.avatarUrl,
+            convertFileUrlToImageUrl(sessionUser?.profile?.profile?.iconUrl)
+        );
+        const locationName = firstNonEmptyString(
+            resoniteSession.value?.name,
+            userDialog.value.ref?.resonite?.locationName,
+            userDialog.value.ref?.location
+        );
+
+        friendStore.upsertResoniteFriend({
+            id: `resonite:${userId}`,
+            name: displayName,
+            state: sessionUser?.isPresent ? 'online' : 'offline',
+            status: sessionUser?.isPresent ? 'active' : 'busy',
+            ref: {
+                id: `resonite:${userId}`,
+                displayName,
+                location: locationName,
+                currentAvatarImageUrl: avatarUrl,
+                currentAvatarThumbnailImageUrl: avatarUrl,
+                profileImageUrl: avatarUrl,
+                userIcon: avatarUrl,
+                statusDescription: '',
+                resonite: {
+                    userId,
+                    username: firstNonEmptyString(sessionUser?.profile?.username, sessionUser?.username, displayName),
+                    normalizedUsername: String(sessionUser?.profile?.normalizedUsername || '').trim(),
+                    registrationDate: String(sessionUser?.profile?.registrationDate || '').trim(),
+                    isVerified: Boolean(sessionUser?.profile?.isVerified),
+                    tags: Array.isArray(sessionUser?.profile?.tags) ? sessionUser.profile.tags : [],
+                    locationName,
+                    profile: {
+                        iconUrl: avatarUrl,
+                        tagline: String(sessionUser?.profile?.profile?.tagline || '').trim(),
+                        description: String(sessionUser?.profile?.profile?.description || '').trim()
+                    }
+                }
+            },
+            provider: 'resonite',
+            isExternal: true,
+            resonite: {
+                userId,
+                username: firstNonEmptyString(sessionUser?.profile?.username, sessionUser?.username, displayName),
+                normalizedUsername: String(sessionUser?.profile?.normalizedUsername || '').trim(),
+                registrationDate: String(sessionUser?.profile?.registrationDate || '').trim(),
+                isVerified: Boolean(sessionUser?.profile?.isVerified),
+                tags: Array.isArray(sessionUser?.profile?.tags) ? sessionUser.profile.tags : [],
+                locationName,
+                isPresent: Boolean(sessionUser?.isPresent),
+                profile: {
+                    iconUrl: avatarUrl,
+                    tagline: String(sessionUser?.profile?.profile?.tagline || '').trim(),
+                    description: String(sessionUser?.profile?.profile?.description || '').trim()
+                }
+            }
+        });
+
+        showUserDialog(`resonite:${userId}`);
+    }
+
+    function firstNonEmptyString(...values) {
+        for (const value of values) {
+            const normalized = String(value || '').trim();
+            if (normalized) {
+                return normalized;
+            }
+        }
+
+        return '';
+    }
+
+    function stripResonitePrefix(id) {
+        const normalizedId = String(id || '').trim();
+        return normalizedId.startsWith('resonite:') ? normalizedId.slice('resonite:'.length) : normalizedId;
+    }
 
     const bioCache = ref({
         userId: null,

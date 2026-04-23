@@ -23,6 +23,19 @@ function convertFileUrlToImageUrl(
     if (!url) {
         return '';
     }
+    const normalizedUrl = String(url).trim();
+    const resoniteAssetMatch = normalizedUrl.match(
+        /^resdb:\/\/(?:(?:\/)?)([a-f0-9]{32,})(?:\.[a-z0-9]+)?$/i
+    );
+    if (resoniteAssetMatch) {
+        return `https://assets.resonite.com/${resoniteAssetMatch[1]}`;
+    }
+    const resoniteAssetsUrlMatch = normalizedUrl.match(
+        /^https:\/\/assets\.resonite\.com\/([a-f0-9]{32,})(?:\.[a-z0-9]+)?$/i
+    );
+    if (resoniteAssetsUrlMatch) {
+        return `https://assets.resonite.com/${resoniteAssetsUrlMatch[1]}`;
+    }
     /**
      * possible patterns?
      * /file/file_fileId/version
@@ -31,7 +44,7 @@ function convertFileUrlToImageUrl(
      * /file/file_fileId/version/file/
      */
     const pattern = /file\/file_([a-f0-9-]+)\/(\d+)(\/file)?\/?$/;
-    const match = url.match(pattern);
+    const match = normalizedUrl.match(pattern);
 
     if (match) {
         const fileId = match[1];
@@ -39,7 +52,7 @@ function convertFileUrlToImageUrl(
         return `${endpointDomain}/image/file_${fileId}/${version}/${resolution}`;
     }
     // no match return origin url
-    return url;
+    return normalizedUrl;
 }
 
 /**

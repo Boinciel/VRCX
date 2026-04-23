@@ -44,8 +44,7 @@
         useModalStore,
         useSearchStore,
         useUiStore,
-        useUserStore,
-        useVrcxStore
+        useUserStore
     } from '../../../stores';
     import {
         compareByCreatedAt,
@@ -63,7 +62,7 @@
         variant: {
             type: String,
             required: true,
-            validator: (value) => ['user', 'world', 'group'].includes(value)
+            validator: (value) => ['user', 'world', 'group'].includes(String(value))
         }
     });
 
@@ -75,7 +74,6 @@
     const { currentUser } = storeToRefs(useUserStore());
     const { showLaunchDialog } = useLaunchStore();
     const modalStore = useModalStore();
-    const vrcxStore = useVrcxStore();
     const { t } = useI18n();
 
     const dialogState = computed(() => {
@@ -130,6 +128,20 @@
         if (props.variant === 'user') return dialogState.value?.userRef?.id ?? '';
         if (props.variant === 'world') return dialogState.value?.worldRef?.id ?? '';
         return dialogState.value?.groupRef?.id ?? '';
+    });
+
+    const isResoniteUserVariant = computed(() => {
+        return props.variant === 'user' && String(currentId.value || '').startsWith('resonite:');
+    });
+
+    const sharedWithResoniteUserId = computed(() => {
+        const linkedContactId = String(currentUser.value?.$resonitePresence?.linkedContactId || '').trim();
+        if (linkedContactId) {
+            return linkedContactId;
+        }
+
+        const linkedUserId = String(currentUser.value?.$resonitePresence?.linkedUserId || '').trim();
+        return linkedUserId ? `resonite:${linkedUserId}` : '';
     });
 
     const persistKey = computed(() => {
@@ -200,7 +212,6 @@
         createPreviousInstancesColumns(props.variant, {
             shiftHeld,
             currentUserId: currentUser.value?.id,
-            forceUpdateKey: previousInstancesListDialog.value?.forceUpdate,
             onLaunch: showLaunchDialog,
             onShowInfo: handleShowInfo,
             onDelete: deleteGameLogInstance,
@@ -263,9 +274,16 @@
                 D.lastId = currentId.value;
             }
             if (props.variant === 'user') {
-                const data = await database.getPreviousInstancesByUserId(D.userRef);
+                const data = await database.getPreviousInstancesByUserId({
+                    ...D.userRef,
+                    sharedOnly: isResoniteUserVariant.value,
+                    sharedWithUserId: sharedWithResoniteUserId.value
+                });
                 for (const item of data.values()) {
-                    item.$location = parseLocation(item.location);
+                    item.provider = isResoniteUserVariant.value ? 'resonite' : 'vrchat';
+                    if (!isResoniteUserVariant.value) {
+                        item.$location = parseLocation(item.location);
+                    }
                     item.timer = item.time > 0 ? timeToText(item.time) : '';
                     array.push(item);
                 }
