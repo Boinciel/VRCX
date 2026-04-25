@@ -26,9 +26,13 @@
                     }}{{ isGroupByInstance && allFavoriteFriendIds.has(friend.id) ? ' ⭐' : '' }}</span
                 >
 
-                <span v-if="isFriendActiveOrOffline" class="block truncate text-xs">{{
+                <span v-if="isFriendActiveOrOffline && !friend.isExternal" class="block truncate text-xs">{{
                     friend.ref.statusDescription
                 }}</span>
+                <span
+                    v-else-if="isFriendActiveOrOffline"
+                    class="block truncate text-xs"
+                    v-html="renderedExternalPresenceLine"></span>
                 <template v-else>
                     <div v-if="friend.pendingOffline" class="extra block truncate text-xs">
                         {{ t('side_panel.pending_offline') }}
@@ -86,6 +90,7 @@
     import { useUserDisplay } from '../../../composables/useUserDisplay';
     import { getResoniteSessionByHash } from '../../../services/resoniteRealtime';
     import { renderResoniteRichText } from '../../../shared/utils/resoniteRichText';
+    import { formatResoniteWorldLabel } from '../../../shared/utils/resoniteWorldLabel';
 
     import '@/styles/status-icon.css';
     import { showUserDialog } from '../../../coordinators/userCoordinator';
@@ -102,15 +107,6 @@
 
     const { t } = useI18n();
 
-    const resoniteAccessLevelLabels = {
-        private: 'Private',
-        lan: 'LAN',
-        contacts: 'Contacts only',
-        contactsplus: 'Contacts+',
-        registeredusers: 'Registered users',
-        anyone: 'Public'
-    };
-
     const isFriendTraveling = computed(() => props.friend.ref?.location === 'traveling');
     const isFriendActiveOrOffline = computed(() => props.friend.state === 'active' || props.friend.state === 'offline');
 
@@ -124,30 +120,33 @@
             return '';
         }
 
+        // 'private' is a sentinel — always render as 'Private' without appending an access level
+        if (baseLocation.toLowerCase() === 'private') {
+            return 'Private';
+        }
+
         const sessionHash = String(
             props.friend.ref?.resonite?.currentSessionHash || props.friend.resonite?.currentSessionHash || ''
         ).trim();
-        const accessLevel = String(getResoniteSessionByHash(sessionHash)?.accessLevel || '')
-            .trim()
-            .toLowerCase();
-        const accessSuffix = resoniteAccessLevelLabels[accessLevel] || '';
+        const accessLevel = String(
+            props.friend.ref?.resonite?.accessLevel ||
+                props.friend.resonite?.accessLevel ||
+                getResoniteSessionByHash(sessionHash)?.accessLevel ||
+                ''
+        ).trim();
 
-        if (!accessSuffix || baseLocation.toLowerCase() === accessSuffix.toLowerCase()) {
-            return baseLocation;
-        }
-
-        return `${baseLocation} · ${accessSuffix}`;
+        return formatResoniteWorldLabel(baseLocation, accessLevel);
     }
 
     const externalPresenceLine = computed(() => {
-        const traveling = String(props.friend.ref?.traveling || '').trim();
+        const traveling = formatResonitePresenceLocation(String(props.friend.ref?.traveling || '').trim());
         const rawLocation = String(props.friend.ref?.location || '').trim();
         // 'offline' is a sentinel from contacts-only payloads — don't display it as a world name
         const location = rawLocation !== 'offline' ? formatResonitePresenceLocation(rawLocation) : '';
         const statusDescription = String(props.friend.ref?.statusDescription || '').trim();
         const provider = String(props.friend.provider || 'external').trim();
 
-        return traveling || location || statusDescription || `[${provider}]`;
+        return traveling || location || statusDescription || '';
     });
 
     const epoch = computed(() =>

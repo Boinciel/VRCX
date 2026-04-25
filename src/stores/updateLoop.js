@@ -21,6 +21,10 @@ import { useUserStore } from './user';
 import { useVRCXUpdaterStore } from './vrcxUpdater';
 import { useVrStore } from './vr';
 import { useVrcxStore } from './vrcx';
+import {
+    calculateResoniteRefreshDelaySeconds,
+    getResoniteRefreshScopeKey
+} from './updateLoopResonite';
 import { watchState } from '../services/watchState';
 
 import * as workerTimers from 'worker-timers';
@@ -94,13 +98,35 @@ export const useUpdateLoopStore = defineStore('UpdateLoop', () => {
                     advancedSettingsStore.resoniteIntegration &&
                     --state.nextResoniteFriendsRefresh <= 0
                 ) {
-                    const refreshSeconds = Math.max(
-                        30,
-                        Number(advancedSettingsStore.resoniteRefreshSeconds) ||
-                            300
+                    const refreshSeconds = Number(
+                        advancedSettingsStore.resoniteRefreshSeconds
                     );
-                    state.nextResoniteFriendsRefresh = refreshSeconds;
-                    friendStore.refreshResoniteFriends();
+                    const scopeKey = getResoniteRefreshScopeKey(
+                        userStore.currentUser?.id
+                    );
+                    const syncState = scopeKey
+                        ? await database.getResoniteSyncState(scopeKey)
+                        : null;
+                    const now = Date.now();
+
+                    if (Number(syncState?.nextSnapshotRetryAt || 0) > now) {
+                        state.nextResoniteFriendsRefresh =
+                            calculateResoniteRefreshDelaySeconds(
+                                syncState,
+                                refreshSeconds,
+                                now
+                            );
+                    } else {
+                        await friendStore.refreshResoniteFriends();
+                        const updatedSyncState = scopeKey
+                            ? await database.getResoniteSyncState(scopeKey)
+                            : null;
+                        state.nextResoniteFriendsRefresh =
+                            calculateResoniteRefreshDelaySeconds(
+                                updatedSyncState,
+                                refreshSeconds
+                            );
+                    }
                 }
                 if (--state.nextGroupInstanceRefresh <= 0) {
                     if (watchState.isFriendsLoaded) {

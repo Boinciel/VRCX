@@ -9,7 +9,8 @@ const mocks = vi.hoisted(() => ({
         onlineFriends: { value: [] },
         activeFriends: { value: [] },
         offlineFriends: { value: [] },
-        friendsInSameInstance: { value: [] }
+        friendsInSameInstance: { value: [] },
+        resoniteFriendsInSameSession: { value: [] }
     },
     appearanceStore: {
         isSidebarGroupByInstance: { value: false },
@@ -249,6 +250,7 @@ describe('FriendsSidebar.vue', () => {
         mocks.friendStore.activeFriends.value = [];
         mocks.friendStore.offlineFriends.value = [];
         mocks.friendStore.friendsInSameInstance.value = [];
+        mocks.friendStore.resoniteFriendsInSameSession.value = [];
         mocks.instanceStore.cachedInstances = new Map();
 
         mocks.appearanceStore.isSidebarGroupByInstance.value = false;
@@ -317,6 +319,53 @@ describe('FriendsSidebar.vue', () => {
 
         expect(wrapper.text()).toContain('side_panel.same_instance');
         expect(wrapper.findAll('[data-testid="friend-item"]').length).toBe(2);
+        expect(wrapper.text()).toContain('(2)');
+    });
+
+    test('renders grouped Resonite session rows when grouping is enabled', async () => {
+        mocks.appearanceStore.isSidebarGroupByInstance.value = true;
+        mocks.friendStore.resoniteFriendsInSameSession.value = [
+            [
+                {
+                    id: 'resonite:u-a',
+                    state: 'online',
+                    provider: 'resonite',
+                    isExternal: true,
+                    ref: {
+                        resonite: {
+                            currentSessionHash: 'S-shared'
+                        }
+                    },
+                    resonite: {
+                        currentSessionHash: 'S-shared',
+                        currentSessionName: 'Shared Session'
+                    }
+                },
+                {
+                    id: 'resonite:u-b',
+                    state: 'online',
+                    provider: 'resonite',
+                    isExternal: true,
+                    ref: {
+                        resonite: {
+                            currentSessionHash: 'S-shared'
+                        }
+                    },
+                    resonite: {
+                        currentSessionHash: 'S-shared',
+                        currentSessionName: 'Shared Session'
+                    }
+                }
+            ]
+        ];
+
+        const wrapper = mount(FriendsSidebar);
+        await flushPromises();
+        await nextTick();
+
+        expect(wrapper.text()).toContain('side_panel.same_instance');
+        expect(wrapper.text()).toContain('Shared Session');
+        expect(wrapper.findAll('[data-testid="friend-item"]')).toHaveLength(2);
         expect(wrapper.text()).toContain('(2)');
     });
 

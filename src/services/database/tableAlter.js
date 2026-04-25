@@ -8,6 +8,8 @@ const tableAlter = {
         // }, 'PRAGMA user_version');
         // if (version === 0) {
         await this.updateTableForGroupNames();
+        await this.addProviderColumnsToFeedTables();
+        await this.addResoniteSyncStateBackoffColumns();
         await this.addFriendLogFriendNumber();
         await this.updateTableForAvatarHistory();
         await this.addPerformanceIndexes(); // 16
@@ -41,6 +43,74 @@ const tableAlter = {
             e = e.toString();
             if (e.indexOf('no such column') === -1) {
                 console.error(e);
+            }
+        }
+    },
+
+    async addProviderColumnsToFeedTables() {
+        var tables = [];
+        await sqliteService.execute((dbRow) => {
+            tables.push(dbRow[0]);
+        }, `SELECT name FROM sqlite_schema WHERE type='table' AND (name LIKE '%_feed_gps' OR name LIKE '%_feed_status' OR name LIKE '%_feed_bio' OR name LIKE '%_feed_avatar' OR name LIKE '%_feed_online_offline')`);
+        for (var tableName of tables) {
+            try {
+                await sqliteService.executeNonQuery(
+                    `ALTER TABLE ${tableName} ADD provider TEXT DEFAULT ''`
+                );
+            } catch (e) {
+                e = e.toString();
+                if (e.indexOf('duplicate column name') === -1) {
+                    console.error(e);
+                }
+            }
+        }
+    },
+
+    async addResoniteSyncStateBackoffColumns() {
+        var tables = [];
+        await sqliteService.execute((dbRow) => {
+            tables.push(dbRow[0]);
+        }, `SELECT name FROM sqlite_schema WHERE type='table' AND name LIKE '%_resonite_sync_state_v1'`);
+        for (var tableName of tables) {
+            try {
+                await sqliteService.executeNonQuery(
+                    `ALTER TABLE ${tableName} ADD snapshot_failure_count INTEGER DEFAULT 0`
+                );
+            } catch (e) {
+                e = e.toString();
+                if (e.indexOf('duplicate column name') === -1) {
+                    console.error(e);
+                }
+            }
+            try {
+                await sqliteService.executeNonQuery(
+                    `ALTER TABLE ${tableName} ADD next_snapshot_retry_at INTEGER DEFAULT 0`
+                );
+            } catch (e) {
+                e = e.toString();
+                if (e.indexOf('duplicate column name') === -1) {
+                    console.error(e);
+                }
+            }
+            try {
+                await sqliteService.executeNonQuery(
+                    `ALTER TABLE ${tableName} ADD presence_failure_count INTEGER DEFAULT 0`
+                );
+            } catch (e) {
+                e = e.toString();
+                if (e.indexOf('duplicate column name') === -1) {
+                    console.error(e);
+                }
+            }
+            try {
+                await sqliteService.executeNonQuery(
+                    `ALTER TABLE ${tableName} ADD next_presence_retry_at INTEGER DEFAULT 0`
+                );
+            } catch (e) {
+                e = e.toString();
+                if (e.indexOf('duplicate column name') === -1) {
+                    console.error(e);
+                }
             }
         }
     },

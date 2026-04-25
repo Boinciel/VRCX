@@ -1,13 +1,25 @@
 import { ref } from 'vue';
 
 import { buildResoniteAuthorizationHeader } from './resoniteAuth';
-import configRepository from './config';
+import { database } from './database';
+import {
+    pickResoniteAuthorityStringField,
+    shouldPreferResoniteSnapshotFields,
+    upsertResoniteMergeTraceField
+} from './resoniteMerge';
+import { createResoniteSessionCache } from './resoniteSessionCache';
+import { stripResonitePrefix } from '../shared/utils/resonite';
 import webApiService from './webapi';
 
 const RESONITE_HUB_URL = 'https://api.resonite.com/hub';
-const RESONITE_REALTIME_CACHE_VERSION = 1;
 const RESONITE_REALTIME_CACHE_MAX_ENTRIES = 200;
 const RESONITE_REALTIME_CACHE_MAX_AGE_MS = 1000 * 60 * 60 * 12;
+
+export const resoniteSessionCacheVersion = ref(0);
+
+function bumpResoniteSessionCacheVersion() {
+    resoniteSessionCacheVersion.value += 1;
+}
 
 let signalRModulePromise = null;
 let hubConnection = null;
@@ -18,52 +30,23 @@ let started = false;
 const subscribedUserIds = new Set();
 const subscribedSessionBroadcastKeys = new Set();
 const presenceByUserId = new Map();
-const sessionNameByHash = new Map();
-const sessionDataByHash = new Map();
-const sessionResolvePromises = new Map();
-const sessionResolveMisses = new Map();
-const hostSessionsCache = new Map();
-const hostSessionsPromises = new Map();
-let visibleSessionsCache = {
-    fetchedAt: 0,
-    sessions: []
-};
-let visibleSessionsPromise = null;
+const sessionCache = createResoniteSessionCache({
+    onSessionDataChanged: bumpResoniteSessionCacheVersion
+});
+const sessionNameByHash = sessionCache.sessionNamesByHash;
+const sessionDataByHash = sessionCache.sessionDataByHash;
+const sessionResolvePromises = sessionCache.resolutionPromisesByHash;
+const sessionResolveMisses = sessionCache.resolutionMissesByHash;
+const hostSessionsCache = sessionCache.hostSessionsByUserId;
+const hostSessionsPromises = sessionCache.hostSessionPromisesByUserId;
 let presenceListener = null;
 
-export const resoniteSessionCacheVersion = ref(0);
-
-function bumpResoniteSessionCacheVersion() {
-    resoniteSessionCacheVersion.value += 1;
-}
-
 function setCachedSessionData(sessionHash, sessionPayload) {
-    const normalizedHash = String(sessionHash || '').trim();
-    if (
-        !normalizedHash ||
-        !sessionPayload ||
-        typeof sessionPayload !== 'object'
-    ) {
-        return;
-    }
-
-    sessionDataByHash.set(normalizedHash, sessionPayload);
-    bumpResoniteSessionCacheVersion();
+    sessionCache.setSessionData(sessionHash, sessionPayload);
 }
 
 function clearSessionCaches() {
-    sessionNameByHash.clear();
-    sessionDataByHash.clear();
-    sessionResolvePromises.clear();
-    sessionResolveMisses.clear();
-    hostSessionsCache.clear();
-    hostSessionsPromises.clear();
-    visibleSessionsCache = {
-        fetchedAt: 0,
-        sessions: []
-    };
-    visibleSessionsPromise = null;
-    bumpResoniteSessionCacheVersion();
+    sessionCache.resetAll();
 }
 
 /**
@@ -73,8 +56,7 @@ function clearSessionCaches() {
  * @returns {object|null}
  */
 export function getResoniteSessionByHash(sessionHash) {
-    const normalized = String(sessionHash || '').trim();
-    return normalized ? (sessionDataByHash.get(normalized) ?? null) : null;
+    return sessionCache.getSessionData(sessionHash);
 }
 
 /**
@@ -91,16 +73,11 @@ export async function refreshResoniteSessionByHash(options = {}) {
     }
 
     if (force) {
-        sessionResolveMisses.delete(normalizedHash);
+        sessionCache.deleteResolutionMiss(normalizedHash);
         if (normalizedUserId) {
-            hostSessionsCache.delete(normalizedUserId);
-            hostSessionsPromises.delete(normalizedUserId);
+            sessionCache.deleteHostSessions(normalizedUserId);
         }
-        visibleSessionsCache = {
-            fetchedAt: 0,
-            sessions: []
-        };
-        visibleSessionsPromise = null;
+        sessionCache.resetVisibleSessions();
     }
 
     if (!normalizedApiKey) {
@@ -118,53 +95,9 @@ export async function hydratePersistedResoniteRealtimeState(scopeKey) {
     }
 
     try {
-        const persisted = await configRepository.getObject(
-            getResoniteRealtimeCacheKey(persistenceScopeKey)
-        );
-        if (!persisted || typeof persisted !== 'object') {
-            return false;
-        }
-
-        const persistedAt = Number(persisted.persistedAt || 0);
-        if (
-            !persistedAt ||
-            Date.now() - persistedAt > RESONITE_REALTIME_CACHE_MAX_AGE_MS
-        ) {
-            return false;
-        }
-
-        const sessionNames = Array.isArray(persisted.sessionNames)
-            ? persisted.sessionNames
-            : [];
-        const sessionData = Array.isArray(persisted.sessionData)
-            ? persisted.sessionData
-            : [];
-
-        sessionNameByHash.clear();
-        sessionDataByHash.clear();
-
-        for (const entry of sessionNames) {
-            const sessionHash = String(entry?.sessionHash || '').trim();
-            const sessionName = String(entry?.sessionName || '').trim();
-            if (sessionHash && sessionName) {
-                sessionNameByHash.set(sessionHash, sessionName);
-            }
-        }
-
-        for (const entry of sessionData) {
-            const sessionHash = String(entry?.sessionHash || '').trim();
-            const sessionPayload =
-                entry?.session && typeof entry.session === 'object'
-                    ? entry.session
-                    : null;
-            if (sessionHash && sessionPayload) {
-                sessionDataByHash.set(sessionHash, sessionPayload);
-            }
-        }
-
-        bumpResoniteSessionCacheVersion();
-
-        return sessionNameByHash.size > 0 || sessionDataByHash.size > 0;
+        const hydratedFromDatabase =
+            await hydratePersistedResoniteRealtimeStateFromDatabase();
+        return hydratedFromDatabase.presence || hydratedFromDatabase.sessions;
     } catch (error) {
         console.warn(
             '[ResoniteIntegration] Failed to hydrate persisted realtime cache:',
@@ -184,10 +117,18 @@ export async function persistResoniteRealtimeState(
     }
 
     try {
-        await configRepository.setObject(
-            getResoniteRealtimeCacheKey(normalizedScopeKey),
-            buildPersistedRealtimeCachePayload()
+        const persistedAt = Date.now();
+        await database.replaceResoniteCachedPresence(
+            buildPersistedRealtimePresenceRows(persistedAt)
         );
+        await database.replaceResoniteCachedSessions(
+            buildPersistedRealtimeSessionRows(persistedAt)
+        );
+        await database.setResoniteSyncState({
+            scope: normalizedScopeKey,
+            lastAttemptAt: persistedAt,
+            lastSuccessfulPresenceAt: persistedAt
+        });
         return true;
     } catch (error) {
         console.warn(
@@ -215,9 +156,8 @@ export async function clearResoniteRealtimeState(
     }
 
     try {
-        await configRepository.remove(
-            getResoniteRealtimeCacheKey(normalizedScopeKey)
-        );
+        await database.clearResoniteCachedPresence();
+        await database.clearResoniteCachedSessions();
         if (persistenceScopeKey === normalizedScopeKey) {
             persistenceScopeKey = '';
         }
@@ -271,6 +211,76 @@ export async function ensureResoniteRealtimePresence({
     }
 }
 
+export function reconcileResoniteRealtimeAgainstSnapshot(
+    resoniteFriendsList
+) {
+    if (
+        !Array.isArray(resoniteFriendsList) ||
+        resoniteFriendsList.length === 0
+    ) {
+        return 0;
+    }
+
+    let prunedCount = 0;
+
+    for (const friendData of resoniteFriendsList) {
+        const userId = normalizeResoniteUserId(stripResonitePrefix(friendData?.id));
+        if (!userId) {
+            continue;
+        }
+
+        const snapshotState = String(friendData?.state || '')
+            .trim()
+            .toLowerCase();
+        if (snapshotState !== 'offline') {
+            continue;
+        }
+
+        const contactObservedAt = Number(
+            friendData?.resonite?.contactObservedAt ||
+                friendData?.ref?.resonite?.contactObservedAt ||
+                0
+        );
+        if (!Number.isFinite(contactObservedAt) || contactObservedAt <= 0) {
+            continue;
+        }
+
+        const existingPresence = presenceByUserId.get(userId);
+        if (!existingPresence) {
+            continue;
+        }
+
+        const realtimeObservedAt = Number(existingPresence?.updatedAt || 0);
+        if (
+            !Number.isFinite(realtimeObservedAt) ||
+            realtimeObservedAt <= 0 ||
+            realtimeObservedAt >= contactObservedAt
+        ) {
+            continue;
+        }
+
+        presenceByUserId.delete(userId);
+        prunedCount += 1;
+
+        console.debug(
+            '[ResoniteIntegration] Pruned stale realtime presence after newer snapshot:',
+            JSON.stringify({
+                userId,
+                snapshotState,
+                contactObservedAt,
+                realtimeObservedAt,
+                sourceEvent: String(existingPresence?.sourceEvent || '').trim()
+            })
+        );
+    }
+
+    if (prunedCount > 0) {
+        schedulePersistResoniteRealtimeState();
+    }
+
+    return prunedCount;
+}
+
 export function mergeResoniteRealtimePresence(resoniteFriendsList) {
     if (
         !Array.isArray(resoniteFriendsList) ||
@@ -303,6 +313,158 @@ export function mergeResoniteRealtimePresence(resoniteFriendsList) {
             normalizedRawStatus,
             isOnline
         );
+        let mergeTrace = {
+            ...(friendData?.resonite?.mergeTrace || {}),
+            ...(friendData?.ref?.resonite?.mergeTrace || {})
+        };
+
+        function recordRealtimeMergeTrace(
+            field,
+            winner,
+            reason,
+            existingValue,
+            incomingValue,
+            selectedValue
+        ) {
+            mergeTrace = upsertResoniteMergeTraceField(
+                mergeTrace,
+                'realtime',
+                field,
+                {
+                    winner,
+                    reason,
+                    sourceEvent: String(
+                        realtimePresence?.sourceEvent || ''
+                    ).trim(),
+                    existingValue,
+                    incomingValue,
+                    selectedValue
+                }
+            );
+        }
+
+        function selectRealtimeAuthorityStringField({
+            field,
+            preferSnapshot,
+            snapshotValues = [],
+            realtimeValues = [],
+            trailingValues = [],
+            snapshotReason,
+            realtimeReason
+        }) {
+            const snapshotValue = firstNonEmptyString(...snapshotValues);
+            const realtimeValue = firstNonEmptyString(...realtimeValues);
+            const trailingValue = firstNonEmptyString(...trailingValues);
+            const selectedValue = pickResoniteAuthorityStringField({
+                preferPrimary: preferSnapshot,
+                primaryValues: snapshotValues,
+                secondaryValues: realtimeValues,
+                trailingValues
+            });
+
+            if (
+                preferSnapshot &&
+                snapshotValue &&
+                selectedValue === snapshotValue
+            ) {
+                recordRealtimeMergeTrace(
+                    field,
+                    'snapshot',
+                    snapshotReason,
+                    snapshotValue,
+                    realtimeValue,
+                    selectedValue
+                );
+                return selectedValue;
+            }
+
+            if (realtimeValue && selectedValue === realtimeValue) {
+                recordRealtimeMergeTrace(
+                    field,
+                    'realtime',
+                    realtimeReason,
+                    snapshotValue,
+                    realtimeValue,
+                    selectedValue
+                );
+                return selectedValue;
+            }
+
+            const fallbackWinner = snapshotValue
+                ? 'snapshot'
+                : realtimeValue
+                  ? 'realtime'
+                  : 'derived';
+            recordRealtimeMergeTrace(
+                field,
+                fallbackWinner,
+                trailingValue ? 'derived-fallback' : 'no-realtime-value',
+                snapshotValue,
+                realtimeValue,
+                selectedValue
+            );
+            return selectedValue;
+        }
+
+        const preferSnapshotSessionFields = shouldPreferSnapshotSessionFields(
+            friendData,
+            realtimePresence
+        );
+
+        const preferredCurrentSessionHash = selectRealtimeAuthorityStringField({
+            field: 'currentSessionHash',
+            preferSnapshot: preferSnapshotSessionFields,
+            snapshotValues: [
+                friendData?.resonite?.realtime?.currentSessionHash,
+                friendData?.resonite?.currentSessionHash
+            ],
+            realtimeValues: [realtimePresence.currentSessionHash],
+            snapshotReason: 'snapshot-session-authoritative',
+            realtimeReason: 'realtime-session-authoritative'
+        });
+
+        const preferredCurrentSessionName = selectRealtimeAuthorityStringField({
+            field: 'currentSessionName',
+            preferSnapshot: preferSnapshotSessionFields,
+            snapshotValues: [
+                friendData?.resonite?.realtime?.currentSessionName,
+                friendData?.resonite?.currentSessionName
+            ],
+            realtimeValues: [
+                realtimePresence.currentSessionName,
+                realtimePresence.locationName,
+                getCachedSessionName(preferredCurrentSessionHash)
+            ],
+            trailingValues: preferSnapshotSessionFields
+                ? [getCachedSessionName(preferredCurrentSessionHash)]
+                : [],
+            snapshotReason: 'snapshot-session-authoritative',
+            realtimeReason: 'realtime-session-authoritative'
+        });
+
+        const preferredLocationName = preferSnapshotSessionFields
+            ? firstNonEmptyString(
+                  friendData?.resonite?.locationName,
+                  friendData?.resonite?.realtime?.currentSessionName,
+                  friendData?.resonite?.currentSessionName,
+                  friendData?.ref?.traveling,
+                  sanitizeResoniteLocationFallback(
+                      friendData?.ref?.location,
+                      isOnline
+                  ),
+                  preferredCurrentSessionName,
+                  realtimePresence.locationName
+              )
+            : firstNonEmptyString(
+                  preferredCurrentSessionName,
+                  realtimePresence.locationName,
+                  friendData?.resonite?.locationName,
+                  friendData?.ref?.traveling,
+                  sanitizeResoniteLocationFallback(
+                      friendData?.ref?.location,
+                      isOnline
+                  )
+              );
 
         const privateSessionLabel = getPrivateSessionLabel(
             getCurrentSessionFromList(
@@ -314,51 +476,76 @@ export function mergeResoniteRealtimePresence(resoniteFriendsList) {
         );
 
         const locationName = isOnline
-            ? firstNonEmptyString(
-                  privateSessionLabel,
-                  realtimePresence.currentSessionName,
-                  getCachedSessionName(realtimePresence.currentSessionHash),
-                  realtimePresence.locationName,
-                  friendData?.resonite?.locationName,
-                  friendData?.ref?.traveling,
-                  sanitizeResoniteLocationFallback(
-                      friendData?.ref?.location,
-                      isOnline
-                  )
-              )
+            ? firstNonEmptyString(privateSessionLabel, preferredLocationName)
             : '';
+        const preferSnapshotStatusDescription =
+            shouldPreferResoniteSnapshotFields(
+                realtimePresence?.sourceEvent,
+                friendData?.ref?.statusDescription,
+                friendData?.resonite?.profile?.tagline,
+                friendData?.resonite?.profile?.description
+            );
         const statusDescription = isOnline
-            ? firstNonEmptyString(
-                  realtimePresence.statusDescription,
-                  friendData?.ref?.statusDescription,
-                  friendData?.resonite?.profile?.tagline,
-                  friendData?.resonite?.profile?.description
-              )
+            ? selectRealtimeAuthorityStringField({
+                  field: 'statusDescription',
+                  preferSnapshot: preferSnapshotStatusDescription,
+                  snapshotValues: [
+                      friendData?.ref?.statusDescription,
+                      friendData?.resonite?.profile?.tagline,
+                      friendData?.resonite?.profile?.description
+                  ],
+                  realtimeValues: [realtimePresence.statusDescription],
+                  snapshotReason: 'snapshot-status-authoritative',
+                  realtimeReason: 'realtime-status-authoritative'
+              })
             : firstNonEmptyString(realtimePresence.statusDescription);
 
-        const appVersion = firstNonEmptyString(
-            realtimePresence.appVersion,
-            friendData?.resonite?.appVersion
-        );
-        const outputDevice = firstNonEmptyString(
-            realtimePresence.outputDevice,
-            friendData?.resonite?.outputDevice
-        );
-        const sessionType = firstNonEmptyString(
-            realtimePresence.sessionType,
-            friendData?.resonite?.sessionType
-        );
+        const appVersion = selectRealtimeAuthorityStringField({
+            field: 'appVersion',
+            preferSnapshot: shouldPreferResoniteSnapshotFields(
+                realtimePresence?.sourceEvent,
+                friendData?.resonite?.appVersion
+            ),
+            snapshotValues: [friendData?.resonite?.appVersion],
+            realtimeValues: [realtimePresence.appVersion],
+            snapshotReason: 'snapshot-status-authoritative',
+            realtimeReason: 'realtime-status-authoritative'
+        });
+        const outputDevice = selectRealtimeAuthorityStringField({
+            field: 'outputDevice',
+            preferSnapshot: shouldPreferResoniteSnapshotFields(
+                realtimePresence?.sourceEvent,
+                friendData?.resonite?.outputDevice
+            ),
+            snapshotValues: [friendData?.resonite?.outputDevice],
+            realtimeValues: [realtimePresence.outputDevice],
+            snapshotReason: 'snapshot-status-authoritative',
+            realtimeReason: 'realtime-status-authoritative'
+        });
+        const sessionType = selectRealtimeAuthorityStringField({
+            field: 'sessionType',
+            preferSnapshot: shouldPreferResoniteSnapshotFields(
+                realtimePresence?.sourceEvent,
+                friendData?.resonite?.sessionType
+            ),
+            snapshotValues: [friendData?.resonite?.sessionType],
+            realtimeValues: [realtimePresence.sessionType],
+            snapshotReason: 'snapshot-status-authoritative',
+            realtimeReason: 'realtime-status-authoritative'
+        });
         const currentSessionName = isOnline
             ? firstNonEmptyString(
                   privateSessionLabel,
-                  realtimePresence.currentSessionName,
-                  friendData?.resonite?.realtime?.currentSessionName
+                  preferredCurrentSessionName
               )
             : '';
-        const currentSessionHash = isOnline
+        const currentSessionHash = isOnline ? preferredCurrentSessionHash : '';
+        const accessLevel = isOnline
             ? firstNonEmptyString(
-                  realtimePresence.currentSessionHash,
-                  friendData?.resonite?.realtime?.currentSessionHash
+                  getResoniteSessionByHash(currentSessionHash)?.accessLevel,
+                  friendData?.resonite?.accessLevel,
+                  friendData?.resonite?.realtime?.accessLevel,
+                  friendData?.ref?.resonite?.accessLevel
               )
             : '';
 
@@ -432,6 +619,8 @@ export function mergeResoniteRealtimePresence(resoniteFriendsList) {
             ),
             currentSessionName,
             currentSessionHash,
+            accessLevel,
+            updatedAt: Number(firstDefined(realtimePresence.updatedAt, 0)),
             lastPresenceTimestamp,
             lastStatusChange,
             sessions: Array.isArray(realtimePresence.sessions)
@@ -467,9 +656,11 @@ export function mergeResoniteRealtimePresence(resoniteFriendsList) {
                     sessionType,
                     currentSessionName,
                     currentSessionHash,
+                    accessLevel,
                     isPresent: realtimeSnapshot.isPresent,
                     userSessionId: realtimeSnapshot.userSessionId,
                     compatibilityHash: realtimeSnapshot.compatibilityHash,
+                    mergeTrace,
                     realtime: realtimeSnapshot
                 }
             },
@@ -482,9 +673,11 @@ export function mergeResoniteRealtimePresence(resoniteFriendsList) {
                 sessionType,
                 currentSessionName,
                 currentSessionHash,
+                accessLevel,
                 isPresent: realtimeSnapshot.isPresent,
                 userSessionId: realtimeSnapshot.userSessionId,
                 compatibilityHash: realtimeSnapshot.compatibilityHash,
+                mergeTrace,
                 realtime: realtimeSnapshot
             }
         };
@@ -503,17 +696,7 @@ export async function stopResoniteRealtimePresence() {
     subscribedUserIds.clear();
     subscribedSessionBroadcastKeys.clear();
     presenceByUserId.clear();
-    sessionNameByHash.clear();
-    sessionDataByHash.clear();
-    sessionResolvePromises.clear();
-    sessionResolveMisses.clear();
-    hostSessionsCache.clear();
-    hostSessionsPromises.clear();
-    visibleSessionsCache = {
-        fetchedAt: 0,
-        sessions: []
-    };
-    visibleSessionsPromise = null;
+    sessionCache.resetAll();
 
     if (!hubConnection) {
         started = false;
@@ -784,6 +967,14 @@ function handleRealtimeSessionUpdate(args) {
             continue;
         }
 
+        const currentSession = getCurrentSessionMetadata(existingPresence);
+        const currentBroadcastKey = String(
+            currentSession?.broadcastKey || ''
+        ).trim();
+        if (currentBroadcastKey && currentBroadcastKey !== broadcastKey) {
+            continue;
+        }
+
         const sessionHashes = [];
         for (const session of existingPresence.sessions || []) {
             if (String(session?.broadcastKey || '').trim() !== broadcastKey) {
@@ -806,9 +997,20 @@ function handleRealtimeSessionUpdate(args) {
         const existingHash = String(
             existingPresence.currentSessionHash || ''
         ).trim();
-        const preferredHash = sessionHashes.includes(existingHash)
-            ? existingHash
-            : sessionHashes[0];
+        const currentSessionHash = String(
+            currentSession?.sessionHash || ''
+        ).trim();
+        const preferredHash = sessionHashes.includes(currentSessionHash)
+            ? currentSessionHash
+            : sessionHashes.includes(existingHash)
+              ? existingHash
+              : currentBroadcastKey
+                ? ''
+                : sessionHashes[0];
+
+        if (!preferredHash) {
+            continue;
+        }
 
         const nextPresence = {
             ...existingPresence,
@@ -940,8 +1142,7 @@ export function buildMergedPresence(
                 eventObject.status,
                 eventObject.userStatus?.onlineStatus,
                 eventObject.entity?.onlineStatus,
-                eventObject.entity?.status,
-                previousPresence?.onlineStatus
+                eventObject.entity?.status
             )
         ) || 'offline';
 
@@ -1163,13 +1364,6 @@ function normalizeResoniteUserId(value) {
     return String(raw || '').trim();
 }
 
-function stripResonitePrefix(id) {
-    const value = String(id || '');
-    return value.startsWith('resonite:')
-        ? value.slice('resonite:'.length)
-        : value;
-}
-
 function normalizeStatus(value) {
     if (typeof value === 'number') {
         return (
@@ -1203,6 +1397,39 @@ function mapResoniteStatusToVrcxStatus(status, isOnline) {
         return 'ask me';
     }
     return 'active';
+}
+
+function hasExplicitSnapshotSessionFields(friendData) {
+    return Boolean(
+        firstNonEmptyString(
+            friendData?.resonite?.currentSessionHash,
+            friendData?.resonite?.currentSessionName,
+            friendData?.resonite?.locationName,
+            friendData?.resonite?.realtime?.currentSessionHash,
+            friendData?.resonite?.realtime?.currentSessionName,
+            friendData?.ref?.traveling,
+            sanitizeResoniteLocationFallback(friendData?.ref?.location, true)
+        )
+    );
+}
+
+function shouldPreferSnapshotSessionFields(friendData, realtimePresence) {
+    if (
+        !shouldPreferResoniteSnapshotFields(
+            realtimePresence?.sourceEvent,
+            friendData?.resonite?.currentSessionHash,
+            friendData?.resonite?.currentSessionName,
+            friendData?.resonite?.locationName,
+            friendData?.resonite?.realtime?.currentSessionHash,
+            friendData?.resonite?.realtime?.currentSessionName,
+            friendData?.ref?.traveling,
+            sanitizeResoniteLocationFallback(friendData?.ref?.location, true)
+        )
+    ) {
+        return false;
+    }
+
+    return !firstNonEmptyString(realtimePresence?.currentSessionHash);
 }
 
 function buildStatusDescription({
@@ -1331,12 +1558,7 @@ function getPrivateSessionLabel(session) {
 }
 
 function getCachedSessionName(sessionHash) {
-    const normalizedHash = String(sessionHash || '').trim();
-    if (!normalizedHash) {
-        return '';
-    }
-
-    return String(sessionNameByHash.get(normalizedHash) || '').trim();
+    return sessionCache.getSessionName(sessionHash);
 }
 
 async function hydrateRealtimeSessionNames(userId, presence) {
@@ -1399,18 +1621,22 @@ async function hydrateRealtimeSessionNames(userId, presence) {
         return;
     }
 
-    const preferResolvedName = existing.sourceEvent !== 'ReceiveSessionUpdate';
+    const allowResolvedNamePromotion = !firstNonEmptyString(
+        existing.locationName,
+        existing.currentSessionName,
+        existing.statusDescription
+    );
     const updatedPresence = {
         ...existing,
-        sourceEvent: preferResolvedName
+        sourceEvent: allowResolvedNamePromotion
             ? 'ResolvedSessionName'
             : existing.sourceEvent,
-        locationName: preferResolvedName
-            ? firstNonEmptyString(resolvedName, existing.locationName)
-            : firstNonEmptyString(existing.locationName, resolvedName),
-        currentSessionName: preferResolvedName
-            ? firstNonEmptyString(resolvedName, existing.currentSessionName)
-            : firstNonEmptyString(existing.currentSessionName, resolvedName)
+        locationName: firstNonEmptyString(existing.locationName, resolvedName),
+        currentSessionName: firstNonEmptyString(
+            existing.currentSessionName,
+            existing.locationName,
+            resolvedName
+        )
     };
 
     presenceByUserId.set(userId, updatedPresence);
@@ -1740,17 +1966,17 @@ async function fetchVisibleSessions(apiKey) {
 
     const now = Date.now();
     if (
-        Array.isArray(visibleSessionsCache.sessions) &&
-        now - visibleSessionsCache.fetchedAt < 30_000
+        Array.isArray(sessionCache.visibleSessions.sessions) &&
+        now - sessionCache.visibleSessions.fetchedAt < 30_000
     ) {
-        return visibleSessionsCache.sessions;
+        return sessionCache.visibleSessions.sessions;
     }
 
-    if (visibleSessionsPromise) {
-        return visibleSessionsPromise;
+    if (sessionCache.visibleSessionsPromise) {
+        return sessionCache.visibleSessionsPromise;
     }
 
-    visibleSessionsPromise = (async () => {
+    sessionCache.visibleSessionsPromise = (async () => {
         const headers = {
             Authorization: buildResoniteAuthorizationHeader(apiKey)
         };
@@ -1776,7 +2002,7 @@ async function fetchVisibleSessions(apiKey) {
                     continue;
                 }
 
-                visibleSessionsCache = {
+                sessionCache.visibleSessions = {
                     fetchedAt: Date.now(),
                     sessions
                 };
@@ -1796,9 +2022,9 @@ async function fetchVisibleSessions(apiKey) {
     })();
 
     try {
-        return await visibleSessionsPromise;
+        return await sessionCache.visibleSessionsPromise;
     } finally {
-        visibleSessionsPromise = null;
+        sessionCache.visibleSessionsPromise = null;
     }
 }
 
@@ -1930,13 +2156,7 @@ async function resolveSessionNameByHash(sessionHash, apiKey) {
         };
         const encodedSessionHash = encodeURIComponent(sessionHash);
         const candidateUrls = [
-            `https://api.resonite.com/sessions/${encodedSessionHash}`,
-            `https://api.resonite.com/sessionInfos/${encodedSessionHash}`,
-            `https://api.resonite.com/sessionInfo/${encodedSessionHash}`,
-            `https://api.resonite.com/sessions/hash/${encodedSessionHash}`,
-            `https://api.resonite.com/sessions?sessionHash=${encodedSessionHash}`,
-            `https://api.resonite.com/sessionInfos?sessionHash=${encodedSessionHash}`,
-            `https://api.resonite.com/sessions?hash=${encodedSessionHash}`
+            `https://api.resonite.com/sessions/${encodedSessionHash}`
         ];
 
         for (const url of candidateUrls) {
@@ -2125,10 +2345,6 @@ function normalizeResonitePersistenceScope(value) {
         .toLowerCase();
 }
 
-function getResoniteRealtimeCacheKey(scopeKey) {
-    return `VRCX_resoniteRealtimeCache_${scopeKey}`;
-}
-
 function schedulePersistResoniteRealtimeState() {
     if (!persistenceScopeKey) {
         return;
@@ -2144,29 +2360,278 @@ function schedulePersistResoniteRealtimeState() {
     }, 500);
 }
 
-function buildPersistedRealtimeCachePayload() {
-    const sessionNames = Array.from(sessionNameByHash.entries())
-        .map(([sessionHash, sessionName]) => ({
-            sessionHash,
-            sessionName
-        }))
-        .filter((entry) => entry.sessionHash && entry.sessionName)
-        .slice(-RESONITE_REALTIME_CACHE_MAX_ENTRIES);
+async function hydratePersistedResoniteRealtimeStateFromDatabase() {
+    const now = Date.now();
+    const cachedPresence = await database.getResoniteCachedPresence();
+    const cachedSessions = await database.getResoniteCachedSessions();
 
-    const sessionData = Array.from(sessionDataByHash.entries())
-        .map(([sessionHash, session]) => ({
-            sessionHash,
-            session: sanitizePersistedSessionPayload(session)
-        }))
-        .filter((entry) => entry.sessionHash && entry.session)
-        .slice(-RESONITE_REALTIME_CACHE_MAX_ENTRIES);
+    const hydratedPresence = hydratePersistedRealtimePresenceRows(
+        cachedPresence,
+        now
+    );
+    const hydratedSessions = hydratePersistedRealtimeSessionRows(
+        cachedSessions,
+        now
+    );
 
     return {
-        version: RESONITE_REALTIME_CACHE_VERSION,
-        persistedAt: Date.now(),
-        sessionNames,
-        sessionData
+        presence: hydratedPresence,
+        sessions: hydratedSessions
     };
+}
+
+function hydratePersistedRealtimePresenceRows(cachedPresence, now) {
+    if (!Array.isArray(cachedPresence) || cachedPresence.length === 0) {
+        return false;
+    }
+
+    presenceByUserId.clear();
+
+    for (const entry of cachedPresence) {
+        const userId = normalizeResoniteUserId(entry?.resoniteUserId);
+        const expiresAt = Number(entry?.expiresAt || 0);
+        const observedAt = Number(entry?.observedAt || 0);
+        const isExpired =
+            (expiresAt > 0 && expiresAt <= now) ||
+            (!expiresAt &&
+                (!observedAt ||
+                    now - observedAt > RESONITE_REALTIME_CACHE_MAX_AGE_MS));
+        if (!userId || isExpired) {
+            continue;
+        }
+
+        const payload =
+            entry?.payload && typeof entry.payload === 'object'
+                ? entry.payload
+                : null;
+        const persistedPresence = buildHydratedPersistedPresence(
+            userId,
+            entry,
+            payload
+        );
+        presenceByUserId.set(userId, persistedPresence);
+    }
+
+    return presenceByUserId.size > 0;
+}
+
+function hydratePersistedRealtimeSessionRows(cachedSessions, now) {
+    if (!Array.isArray(cachedSessions) || cachedSessions.length === 0) {
+        return false;
+    }
+
+    sessionCache.clearResolvedSessions({ notify: false });
+
+    for (const entry of cachedSessions) {
+        const sessionHash = String(entry?.sessionHash || '').trim();
+        const expiresAt = Number(entry?.expiresAt || 0);
+        const observedAt = Number(entry?.observedAt || 0);
+        const isExpired =
+            (expiresAt > 0 && expiresAt <= now) ||
+            (!expiresAt &&
+                (!observedAt ||
+                    now - observedAt > RESONITE_REALTIME_CACHE_MAX_AGE_MS));
+        if (!sessionHash || isExpired) {
+            continue;
+        }
+
+        const sessionName = String(entry?.sessionName || '').trim();
+        const sessionPayload =
+            entry?.payload && typeof entry.payload === 'object'
+                ? entry.payload
+                : null;
+
+        if (sessionName) {
+            sessionNameByHash.set(sessionHash, sessionName);
+        }
+
+        if (sessionPayload && Object.keys(sessionPayload).length > 0) {
+            sessionDataByHash.set(sessionHash, sessionPayload);
+        }
+    }
+
+    if (sessionNameByHash.size === 0 && sessionDataByHash.size === 0) {
+        return false;
+    }
+
+    bumpResoniteSessionCacheVersion();
+    return true;
+}
+
+function buildPersistedRealtimeSessionRows(persistedAt = Date.now()) {
+    const expiresAt = persistedAt + RESONITE_REALTIME_CACHE_MAX_AGE_MS;
+    const sessionRowsByHash = new Map();
+
+    for (const [sessionHash, sessionName] of sessionNameByHash.entries()) {
+        const normalizedHash = String(sessionHash || '').trim();
+        const normalizedName = String(sessionName || '').trim();
+        if (!normalizedHash || !normalizedName) {
+            continue;
+        }
+
+        sessionRowsByHash.set(normalizedHash, {
+            sessionHash: normalizedHash,
+            sessionName: normalizedName,
+            hostUserId: '',
+            observedAt: persistedAt,
+            expiresAt,
+            payload: {}
+        });
+    }
+
+    for (const [sessionHash, session] of sessionDataByHash.entries()) {
+        const normalizedHash = String(sessionHash || '').trim();
+        const sanitizedSession = sanitizePersistedSessionPayload(session);
+        if (!normalizedHash || !sanitizedSession) {
+            continue;
+        }
+
+        const currentEntry = sessionRowsByHash.get(normalizedHash) || {
+            sessionHash: normalizedHash,
+            sessionName: '',
+            hostUserId: '',
+            observedAt: persistedAt,
+            expiresAt,
+            payload: {}
+        };
+
+        sessionRowsByHash.set(normalizedHash, {
+            ...currentEntry,
+            sessionName: firstNonEmptyString(
+                currentEntry.sessionName,
+                sanitizedSession.name
+            ),
+            hostUserId: firstNonEmptyString(
+                currentEntry.hostUserId,
+                sanitizedSession.hostUserId,
+                sanitizedSession.hostUserID
+            ),
+            observedAt: persistedAt,
+            expiresAt,
+            payload: sanitizedSession
+        });
+    }
+
+    return Array.from(sessionRowsByHash.values())
+        .filter((entry) => entry.sessionHash)
+        .slice(-RESONITE_REALTIME_CACHE_MAX_ENTRIES);
+}
+
+function buildPersistedRealtimePresenceRows(persistedAt = Date.now()) {
+    const expiresAt = persistedAt + RESONITE_REALTIME_CACHE_MAX_AGE_MS;
+
+    return Array.from(presenceByUserId.entries())
+        .map(([userId, presence]) => {
+            const normalizedUserId = normalizeResoniteUserId(userId);
+            const sanitizedPresence = sanitizePersistedPresencePayload(
+                normalizedUserId,
+                presence,
+                persistedAt
+            );
+            if (!normalizedUserId || !sanitizedPresence) {
+                return null;
+            }
+
+            return {
+                resoniteUserId: normalizedUserId,
+                onlineStatus: String(
+                    sanitizedPresence.onlineStatus || ''
+                ).trim(),
+                locationName: String(
+                    sanitizedPresence.locationName || ''
+                ).trim(),
+                currentSessionHash: String(
+                    sanitizedPresence.currentSessionHash || ''
+                ).trim(),
+                currentSessionName: String(
+                    sanitizedPresence.currentSessionName || ''
+                ).trim(),
+                userSessionId: String(
+                    sanitizedPresence.userSessionId || ''
+                ).trim(),
+                sessionType: String(sanitizedPresence.sessionType || '').trim(),
+                outputDevice: String(
+                    sanitizedPresence.outputDevice || ''
+                ).trim(),
+                appVersion: String(sanitizedPresence.appVersion || '').trim(),
+                compatibilityHash: String(
+                    sanitizedPresence.compatibilityHash || ''
+                ).trim(),
+                isMobile: sanitizedPresence.isMobile,
+                isPresent: sanitizedPresence.isPresent,
+                observedAt: Number(sanitizedPresence.updatedAt || persistedAt),
+                expiresAt,
+                source: String(sanitizedPresence.sourceEvent || '').trim(),
+                payload: sanitizedPresence
+            };
+        })
+        .filter(Boolean)
+        .slice(-RESONITE_REALTIME_CACHE_MAX_ENTRIES);
+}
+
+function sanitizePersistedPresencePayload(
+    userId,
+    presence,
+    persistedAt = Date.now()
+) {
+    if (!presence || typeof presence !== 'object') {
+        return null;
+    }
+
+    return {
+        userId: normalizeResoniteUserId(
+            firstNonEmptyString(presence.userId, userId)
+        ),
+        onlineStatus: normalizeStatus(presence.onlineStatus) || 'offline',
+        statusDescription: firstNonEmptyString(presence.statusDescription),
+        locationName: firstNonEmptyString(presence.locationName),
+        appVersion: firstNonEmptyString(presence.appVersion),
+        outputDevice: firstNonEmptyString(presence.outputDevice),
+        sessionType: firstNonEmptyString(presence.sessionType),
+        userSessionId: firstNonEmptyString(presence.userSessionId),
+        compatibilityHash: firstNonEmptyString(presence.compatibilityHash),
+        hashSalt: firstNonEmptyString(presence.hashSalt),
+        isPresent: Boolean(firstDefined(presence.isPresent, false)),
+        isMobile:
+            presence.isMobile === undefined ? null : Boolean(presence.isMobile),
+        currentSessionIndex: Number(
+            firstDefined(presence.currentSessionIndex, -1)
+        ),
+        currentSessionName: firstNonEmptyString(presence.currentSessionName),
+        currentSessionHash: firstNonEmptyString(presence.currentSessionHash),
+        lastPresenceTimestamp: firstNonEmptyString(
+            presence.lastPresenceTimestamp
+        ),
+        lastStatusChange: firstNonEmptyString(presence.lastStatusChange),
+        sessions: Array.isArray(presence.sessions) ? presence.sessions : [],
+        updatedAt: Number(firstDefined(presence.updatedAt, persistedAt)),
+        sourceEvent: firstNonEmptyString(presence.sourceEvent)
+    };
+}
+
+function buildHydratedPersistedPresence(userId, entry, payload) {
+    const fallbackPayload = {
+        userId,
+        onlineStatus: normalizeStatus(entry?.onlineStatus) || 'offline',
+        locationName: firstNonEmptyString(entry?.locationName),
+        appVersion: firstNonEmptyString(entry?.appVersion),
+        outputDevice: firstNonEmptyString(entry?.outputDevice),
+        sessionType: firstNonEmptyString(entry?.sessionType),
+        userSessionId: firstNonEmptyString(entry?.userSessionId),
+        compatibilityHash: firstNonEmptyString(entry?.compatibilityHash),
+        isPresent: Boolean(firstDefined(entry?.isPresent, false)),
+        currentSessionIndex: -1,
+        currentSessionName: firstNonEmptyString(entry?.currentSessionName),
+        currentSessionHash: firstNonEmptyString(entry?.currentSessionHash),
+        sessions: [],
+        updatedAt: Number(entry?.observedAt || Date.now()),
+        sourceEvent: firstNonEmptyString(entry?.source)
+    };
+
+    return sanitizePersistedPresencePayload(userId, {
+        ...fallbackPayload,
+        ...(payload || {})
+    });
 }
 
 function sanitizePersistedSessionPayload(session) {

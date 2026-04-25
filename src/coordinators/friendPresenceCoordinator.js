@@ -280,12 +280,37 @@ export async function runPendingOfflineTickFlow({
         friends,
         pendingOfflineMap,
         pendingOfflineDelay,
+        resoniteTravelingGraceDelay,
+        resonitePendingOfflineDelay,
         commitPendingResoniteUpdate
     } = friendStore;
 
     const currentTime = now();
     for (const [id, pending] of pendingOfflineMap.entries()) {
-        if (currentTime - pending.startTime >= pendingOfflineDelay) {
+        if (
+            pending?.phase === 'traveling' &&
+            currentTime - pending.startTime >=
+                Number(pending.travelGraceDelay || resoniteTravelingGraceDelay)
+        ) {
+            const ctx = friends.get(id);
+            if (typeof ctx === 'undefined') {
+                pendingOfflineMap.delete(id);
+                continue;
+            }
+
+            pending.phase = 'pending-offline';
+            pending.startTime = currentTime;
+            ctx.pendingOffline = true;
+            friendStore.reindexSortedFriend(ctx);
+            continue;
+        }
+
+        const effectiveDelay =
+            pending?.phase === 'pending-offline'
+                ? Number(pending.offlineDelay || resonitePendingOfflineDelay)
+                : pendingOfflineDelay;
+
+        if (currentTime - pending.startTime >= effectiveDelay) {
             const ctx = friends.get(id);
             if (typeof ctx === 'undefined') {
                 pendingOfflineMap.delete(id);

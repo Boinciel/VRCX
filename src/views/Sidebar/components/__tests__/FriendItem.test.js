@@ -201,7 +201,7 @@ describe('FriendItem.vue', () => {
                     $userColour: '#fff',
                     statusDescription: 'Online',
                     location: '<color=cyan>My World</color>',
-                    traveling: '',
+                    traveling: '<color=cyan>My World</color>',
                     travelingToLocation: '',
                     $location_at: 123,
                     resonite: {
@@ -212,7 +212,37 @@ describe('FriendItem.vue', () => {
         });
 
         expect(getResoniteSessionByHashMock).toHaveBeenCalledWith('S-hash');
-        expect(wrapper.text()).toContain('My World · Contacts+');
+        expect(wrapper.text()).toContain('My World - Contacts+');
         expect(wrapper.html()).toContain('color:#00ffff');
+    });
+
+    test('appends Resonite session access label for active external rows', () => {
+        getResoniteSessionByHashMock.mockReturnValue({
+            accessLevel: 'anyone'
+        });
+
+        const wrapper = mountItem({
+            friend: makeFriend({
+                id: 'resonite:U-2',
+                isExternal: true,
+                state: 'active',
+                ref: {
+                    displayName: 'Builder',
+                    $userColour: '#fff',
+                    statusDescription: '<color=green>Workshop</color>',
+                    location: '<color=green>Workshop</color>',
+                    traveling: '',
+                    travelingToLocation: '',
+                    $location_at: 456,
+                    resonite: {
+                        currentSessionHash: 'S-public'
+                    }
+                }
+            })
+        });
+
+        expect(getResoniteSessionByHashMock).toHaveBeenCalledWith('S-public');
+        expect(wrapper.text()).toContain('Workshop - Public');
+        expect(wrapper.html()).toContain('color:#00ff00');
     });
 });

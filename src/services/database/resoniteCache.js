@@ -152,7 +152,11 @@ const resoniteCache = {
                 last_successful_presence_at INTEGER NOT NULL DEFAULT 0,
                 last_error_text TEXT NOT NULL DEFAULT '',
                 snapshot_revision TEXT NOT NULL DEFAULT '',
-                active_resonite_user_id TEXT NOT NULL DEFAULT ''
+                active_resonite_user_id TEXT NOT NULL DEFAULT '',
+                snapshot_failure_count INTEGER NOT NULL DEFAULT 0,
+                next_snapshot_retry_at INTEGER NOT NULL DEFAULT 0,
+                presence_failure_count INTEGER NOT NULL DEFAULT 0,
+                next_presence_retry_at INTEGER NOT NULL DEFAULT 0
             )`
         );
     },
@@ -339,6 +343,17 @@ const resoniteCache = {
         );
     },
 
+    async replaceResoniteCachedPresence(entries) {
+        await sqliteService.executeNonQuery(`DELETE FROM ${presenceTable()}`);
+        for (const entry of Array.isArray(entries) ? entries : []) {
+            this.upsertResoniteCachedPresence(entry);
+        }
+    },
+
+    async clearResoniteCachedPresence() {
+        await sqliteService.executeNonQuery(`DELETE FROM ${presenceTable()}`);
+    },
+
     async getResoniteCachedSessions(sessionHashes = []) {
         const rows = [];
         const whereClause = buildQuotedList(sessionHashes);
@@ -372,6 +387,17 @@ const resoniteCache = {
         );
     },
 
+    async replaceResoniteCachedSessions(entries) {
+        await sqliteService.executeNonQuery(`DELETE FROM ${sessionsTable()}`);
+        for (const entry of Array.isArray(entries) ? entries : []) {
+            this.upsertResoniteCachedSession(entry);
+        }
+    },
+
+    async clearResoniteCachedSessions() {
+        await sqliteService.executeNonQuery(`DELETE FROM ${sessionsTable()}`);
+    },
+
     async getResoniteSyncState(scope = 'default') {
         const normalizedScope = String(scope || 'default').trim() || 'default';
         let row = null;
@@ -384,10 +410,14 @@ const resoniteCache = {
                     lastSuccessfulPresenceAt: Number(dbRow[3] || 0),
                     lastErrorText: dbRow[4],
                     snapshotRevision: dbRow[5],
-                    activeResoniteUserId: dbRow[6]
+                    activeResoniteUserId: dbRow[6],
+                    snapshotFailureCount: Number(dbRow[7] || 0),
+                    nextSnapshotRetryAt: Number(dbRow[8] || 0),
+                    presenceFailureCount: Number(dbRow[9] || 0),
+                    nextPresenceRetryAt: Number(dbRow[10] || 0)
                 };
             },
-            `SELECT scope, last_attempt_at, last_successful_snapshot_at, last_successful_presence_at, last_error_text, snapshot_revision, active_resonite_user_id FROM ${syncStateTable()} WHERE scope = @scope`,
+            `SELECT scope, last_attempt_at, last_successful_snapshot_at, last_successful_presence_at, last_error_text, snapshot_revision, active_resonite_user_id, snapshot_failure_count, next_snapshot_retry_at, presence_failure_count, next_presence_retry_at FROM ${syncStateTable()} WHERE scope = @scope`,
             {
                 '@scope': normalizedScope
             }
@@ -395,25 +425,66 @@ const resoniteCache = {
         return row;
     },
 
-    setResoniteSyncState(entry) {
-        sqliteService.executeNonQuery(
-            `INSERT OR REPLACE INTO ${syncStateTable()} (scope, last_attempt_at, last_successful_snapshot_at, last_successful_presence_at, last_error_text, snapshot_revision, active_resonite_user_id) VALUES (@scope, @last_attempt_at, @last_successful_snapshot_at, @last_successful_presence_at, @last_error_text, @snapshot_revision, @active_resonite_user_id)`,
+    async setResoniteSyncState(entry) {
+        const normalizedScope =
+            String(entry?.scope || 'default').trim() || 'default';
+        const existingEntry =
+            (await this.getResoniteSyncState(normalizedScope)) || {};
+
+        await sqliteService.executeNonQuery(
+            `INSERT OR REPLACE INTO ${syncStateTable()} (scope, last_attempt_at, last_successful_snapshot_at, last_successful_presence_at, last_error_text, snapshot_revision, active_resonite_user_id, snapshot_failure_count, next_snapshot_retry_at, presence_failure_count, next_presence_retry_at) VALUES (@scope, @last_attempt_at, @last_successful_snapshot_at, @last_successful_presence_at, @last_error_text, @snapshot_revision, @active_resonite_user_id, @snapshot_failure_count, @next_snapshot_retry_at, @presence_failure_count, @next_presence_retry_at)`,
             {
-                '@scope': String(entry?.scope || 'default').trim() || 'default',
-                '@last_attempt_at': Number(entry?.lastAttemptAt || 0),
+                '@scope': normalizedScope,
+                '@last_attempt_at': Number(
+                    entry?.lastAttemptAt === undefined
+                        ? existingEntry.lastAttemptAt || 0
+                        : entry.lastAttemptAt || 0
+                ),
                 '@last_successful_snapshot_at': Number(
-                    entry?.lastSuccessfulSnapshotAt || 0
+                    entry?.lastSuccessfulSnapshotAt === undefined
+                        ? existingEntry.lastSuccessfulSnapshotAt || 0
+                        : entry.lastSuccessfulSnapshotAt || 0
                 ),
                 '@last_successful_presence_at': Number(
-                    entry?.lastSuccessfulPresenceAt || 0
+                    entry?.lastSuccessfulPresenceAt === undefined
+                        ? existingEntry.lastSuccessfulPresenceAt || 0
+                        : entry.lastSuccessfulPresenceAt || 0
                 ),
-                '@last_error_text': String(entry?.lastErrorText || '').trim(),
+                '@last_error_text': String(
+                    entry?.lastErrorText === undefined
+                        ? existingEntry.lastErrorText || ''
+                        : entry.lastErrorText || ''
+                ).trim(),
                 '@snapshot_revision': String(
-                    entry?.snapshotRevision || ''
+                    entry?.snapshotRevision === undefined
+                        ? existingEntry.snapshotRevision || ''
+                        : entry.snapshotRevision || ''
                 ).trim(),
                 '@active_resonite_user_id': String(
-                    entry?.activeResoniteUserId || ''
-                ).trim()
+                    entry?.activeResoniteUserId === undefined
+                        ? existingEntry.activeResoniteUserId || ''
+                        : entry.activeResoniteUserId || ''
+                ).trim(),
+                '@snapshot_failure_count': Number(
+                    entry?.snapshotFailureCount === undefined
+                        ? existingEntry.snapshotFailureCount || 0
+                        : entry.snapshotFailureCount || 0
+                ),
+                '@next_snapshot_retry_at': Number(
+                    entry?.nextSnapshotRetryAt === undefined
+                        ? existingEntry.nextSnapshotRetryAt || 0
+                        : entry.nextSnapshotRetryAt || 0
+                ),
+                '@presence_failure_count': Number(
+                    entry?.presenceFailureCount === undefined
+                        ? existingEntry.presenceFailureCount || 0
+                        : entry.presenceFailureCount || 0
+                ),
+                '@next_presence_retry_at': Number(
+                    entry?.nextPresenceRetryAt === undefined
+                        ? existingEntry.nextPresenceRetryAt || 0
+                        : entry.nextPresenceRetryAt || 0
+                )
             }
         );
     },

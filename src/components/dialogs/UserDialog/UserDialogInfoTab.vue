@@ -671,7 +671,9 @@
         userOnlineFor,
         userOnlineForTimestamp
     } from '../../../shared/utils';
+    import { stripResonitePrefix } from '../../../shared/utils/resonite';
     import { renderResoniteRichText } from '../../../shared/utils/resoniteRichText';
+    import { formatResoniteWorldLabel } from '../../../shared/utils/resoniteWorldLabel';
     import { convertFileUrlToImageUrl } from '../../../shared/utils/common';
     import { fetchResoniteUserProfiles } from '../../../services/resoniteFriends';
     import {
@@ -695,7 +697,7 @@
     import { queryRequest, userRequest } from '../../../api';
 
     import InstanceActionBar from '../../InstanceActionBar.vue';
-    import { showUserDialog } from '../../../coordinators/userCoordinator';
+    import { showSeededResoniteUserDialog, showUserDialog } from '../../../coordinators/userCoordinator';
     import { showGroupDialog } from '../../../coordinators/groupCoordinator';
 
     import EditNoteAndMemoDialog from './EditNoteAndMemoDialog.vue';
@@ -706,7 +708,6 @@
 
     const modalStore = useModalStore();
     const instanceStore = useInstanceStore();
-    const friendStore = useFriendStore();
 
     const { hideUserNotes, hideUserMemos } = storeToRefs(useAppearanceSettingsStore());
     const { bioLanguage, translationApi, translationApiType, resoniteApiKey } = storeToRefs(useAdvancedSettingsStore());
@@ -759,20 +760,6 @@
         return hash ? getResoniteSessionByHash(hash) : null;
     });
 
-    /** Human-readable access level label (matches ReCon conventions). */
-    const resoniteAccessLevelLabel = computed(() => {
-        const level = String(resoniteSession.value?.accessLevel || '').toLowerCase();
-        const labels = {
-            private: 'Private',
-            lan: 'LAN',
-            contacts: 'Contacts only',
-            contactsplus: 'Contacts+',
-            registeredusers: 'Registered users',
-            anyone: 'Public'
-        };
-        return labels[level] || level || '';
-    });
-
     const resonitePresenceLocation = computed(() =>
         String(
             userDialog.value.ref?.resonite?.locationName ||
@@ -789,11 +776,20 @@
             return false;
         }
 
+        const hasKnownSession = Boolean(
+            String(
+                userDialog.value.ref?.resonite?.currentSessionHash ||
+                    userDialog.value.ref?.resonite?.realtime?.currentSessionHash ||
+                    resoniteSession.value?.sessionId ||
+                    ''
+            ).trim()
+        );
+
         const state = String(userDialog.value.friend?.state || userDialog.value.ref?.state || '')
             .trim()
             .toLowerCase();
 
-        if (state === 'offline') {
+        if (state === 'offline' && !hasKnownSession) {
             return false;
         }
 
@@ -809,23 +805,18 @@
         return Boolean(userDialog.value.ref?.location);
     });
 
-    /** Resonite session title formatted like VRChat location title, e.g. "World · Friends+". */
+    /** Resonite session title formatted like "World - Contacts+". */
     const resoniteSessionTitle = computed(() => {
-        const baseTitle = String(
-            resoniteSession.value?.name ||
-                userDialog.value.ref?.resonite?.locationName ||
-                userDialog.value.ref?.resonite?.currentSessionName ||
-                userDialog.value.ref?.location ||
-                ''
-        ).trim();
-        const accessSuffix = String(resoniteAccessLevelLabel.value || '').trim();
-        if (!baseTitle) {
-            return accessSuffix;
-        }
-        if (!accessSuffix) {
-            return baseTitle;
-        }
-        return `${baseTitle} · ${accessSuffix}`;
+        return formatResoniteWorldLabel(
+            String(
+                resoniteSession.value?.name ||
+                    userDialog.value.ref?.resonite?.locationName ||
+                    userDialog.value.ref?.resonite?.currentSessionName ||
+                    userDialog.value.ref?.location ||
+                    ''
+            ).trim(),
+            resoniteSession.value?.accessLevel
+        );
     });
 
     /** Preferred session thumbnail URL from Resonite session payload. */
@@ -1036,12 +1027,56 @@
     });
 
     /** Contacts/friends currently in session. */
-    const resoniteContactsInWorldCount = computed(() => resoniteSessionUsers.value.filter((su) => su.friend).length);
+    const resoniteContactsInWorldCount = computed(() => {
+        const currentDialogResoniteUserId = String(userDialog.value.ref?.resonite?.userId || userDialog.value.id || '')
+            .replace(/^resonite:/, '')
+            .trim();
+        const countedUserIds = new Set();
+        let count = 0;
 
-    /** Preferred join URL from sessionURLs. */
+        const maybeCountSessionUser = (sessionUser) => {
+            const sessionUserId = String(sessionUser?.userID || '').trim();
+            if (
+                !sessionUser?.friend ||
+                !sessionUserId ||
+                sessionUserId === currentDialogResoniteUserId ||
+                countedUserIds.has(sessionUserId)
+            ) {
+                return;
+            }
+
+            countedUserIds.add(sessionUserId);
+            count += 1;
+        };
+
+        maybeCountSessionUser(resoniteSessionHost.value);
+        for (const sessionUser of resoniteSessionParticipantUsers.value) {
+            maybeCountSessionUser(sessionUser);
+        }
+
+        return count;
+    });
+
+    /** Preferred join URL from sessionURLs, with a session-id fallback when the API omits deeplinks. */
     const resoniteJoinUrl = computed(() => {
         const urls = Array.isArray(resoniteSession.value?.sessionURLs) ? resoniteSession.value.sessionURLs : [];
-        return urls.map((url) => String(url || '').trim()).find((url) => /^resonite:|^https?:\/\//i.test(url)) || '';
+        const explicitUrl =
+            urls.map((url) => String(url || '').trim()).find((url) => /^resonite:|^https?:\/\//i.test(url)) || '';
+        if (explicitUrl) {
+            return explicitUrl;
+        }
+
+        const sessionId = String(resoniteSession.value?.sessionId || '').trim();
+        if (sessionId) {
+            return `resonite://session/${encodeURIComponent(sessionId)}`;
+        }
+
+        const sessionHash = String(
+            userDialog.value.ref?.resonite?.currentSessionHash ||
+                userDialog.value.ref?.resonite?.realtime?.currentSessionHash ||
+                ''
+        ).trim();
+        return sessionHash ? `resonite://session/${encodeURIComponent(sessionHash)}` : '';
     });
 
     const isRefreshingResoniteSession = ref(false);
@@ -1052,7 +1087,6 @@
         }
         isRefreshingResoniteSession.value = true;
         try {
-            await friendStore.refreshResoniteFriends();
             const resonite = userDialog.value.ref?.resonite || {};
             const sessionHash = String(
                 resonite.currentSessionHash || resonite.realtime?.currentSessionHash || ''
@@ -1084,11 +1118,6 @@
             return;
         }
 
-        if (sessionUser?.friend?.id) {
-            showUserDialog(sessionUser.friend.id);
-            return;
-        }
-
         const displayName = firstNonEmptyString(
             sessionUser?.displayName,
             sessionUser?.username,
@@ -1104,56 +1133,40 @@
             userDialog.value.ref?.resonite?.locationName,
             userDialog.value.ref?.location
         );
+        const sessionHash = firstNonEmptyString(
+            userDialog.value.ref?.resonite?.currentSessionHash,
+            userDialog.value.ref?.resonite?.realtime?.currentSessionHash
+        );
+        const sessionId = firstNonEmptyString(resoniteSession.value?.sessionId);
+        const sessionName = firstNonEmptyString(
+            resoniteSession.value?.name,
+            userDialog.value.ref?.resonite?.currentSessionName,
+            locationName
+        );
+        const sessionHostUserId = String(resoniteSession.value?.hostUserId || '').trim();
+        const seededState = sessionUser?.isPresent ? 'online' : sessionHostUserId === userId ? 'offline' : '';
+        const seededStatus = sessionUser?.isPresent ? 'active' : '';
 
-        friendStore.upsertResoniteFriend({
-            id: `resonite:${userId}`,
-            name: displayName,
-            state: sessionUser?.isPresent ? 'online' : 'offline',
-            status: sessionUser?.isPresent ? 'active' : 'busy',
-            ref: {
-                id: `resonite:${userId}`,
-                displayName,
-                location: locationName,
-                currentAvatarImageUrl: avatarUrl,
-                currentAvatarThumbnailImageUrl: avatarUrl,
-                profileImageUrl: avatarUrl,
-                userIcon: avatarUrl,
-                statusDescription: '',
-                resonite: {
-                    userId,
-                    username: firstNonEmptyString(sessionUser?.profile?.username, sessionUser?.username, displayName),
-                    normalizedUsername: String(sessionUser?.profile?.normalizedUsername || '').trim(),
-                    registrationDate: String(sessionUser?.profile?.registrationDate || '').trim(),
-                    isVerified: Boolean(sessionUser?.profile?.isVerified),
-                    tags: Array.isArray(sessionUser?.profile?.tags) ? sessionUser.profile.tags : [],
-                    locationName,
-                    profile: {
-                        iconUrl: avatarUrl,
-                        tagline: String(sessionUser?.profile?.profile?.tagline || '').trim(),
-                        description: String(sessionUser?.profile?.profile?.description || '').trim()
-                    }
-                }
-            },
-            provider: 'resonite',
-            isExternal: true,
-            resonite: {
-                userId,
-                username: firstNonEmptyString(sessionUser?.profile?.username, sessionUser?.username, displayName),
-                normalizedUsername: String(sessionUser?.profile?.normalizedUsername || '').trim(),
-                registrationDate: String(sessionUser?.profile?.registrationDate || '').trim(),
-                isVerified: Boolean(sessionUser?.profile?.isVerified),
-                tags: Array.isArray(sessionUser?.profile?.tags) ? sessionUser.profile.tags : [],
-                locationName,
-                isPresent: Boolean(sessionUser?.isPresent),
-                profile: {
-                    iconUrl: avatarUrl,
-                    tagline: String(sessionUser?.profile?.profile?.tagline || '').trim(),
-                    description: String(sessionUser?.profile?.profile?.description || '').trim()
-                }
-            }
+        showSeededResoniteUserDialog({
+            userId,
+            displayName,
+            username: firstNonEmptyString(sessionUser?.profile?.username, sessionUser?.username, displayName),
+            normalizedUsername: String(sessionUser?.profile?.normalizedUsername || '').trim(),
+            registrationDate: String(sessionUser?.profile?.registrationDate || '').trim(),
+            isVerified: Boolean(sessionUser?.profile?.isVerified),
+            tags: Array.isArray(sessionUser?.profile?.tags) ? sessionUser.profile.tags : [],
+            state: seededState,
+            status: seededStatus,
+            isPresent: Boolean(sessionUser?.isPresent),
+            avatarUrl,
+            locationName,
+            sessionHash,
+            sessionName,
+            sessionId,
+            friendCtx: sessionUser?.friend || null,
+            tagline: String(sessionUser?.profile?.profile?.tagline || '').trim(),
+            description: String(sessionUser?.profile?.profile?.description || '').trim()
         });
-
-        showUserDialog(`resonite:${userId}`);
     }
 
     function firstNonEmptyString(...values) {
@@ -1165,11 +1178,6 @@
         }
 
         return '';
-    }
-
-    function stripResonitePrefix(id) {
-        const normalizedId = String(id || '').trim();
-        return normalizedId.startsWith('resonite:') ? normalizedId.slice('resonite:'.length) : normalizedId;
     }
 
     const bioCache = ref({

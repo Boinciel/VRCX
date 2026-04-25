@@ -1,7 +1,24 @@
+import { formatResoniteWorldLabel } from '../shared/utils/resoniteWorldLabel';
+
 function firstNonEmptyString(...values) {
     for (const value of values) {
         const normalized = String(value || '').trim();
         if (normalized) {
+            return normalized;
+        }
+    }
+
+    return '';
+}
+
+function firstMeaningfulLocation(...values) {
+    for (const value of values) {
+        const normalized = String(value || '').trim();
+        if (
+            normalized &&
+            normalized !== 'offline' &&
+            normalized !== 'traveling'
+        ) {
             return normalized;
         }
     }
@@ -26,6 +43,11 @@ function normalizeState(value) {
 
 function buildResoniteLocationSnapshot(friendLike) {
     const state = normalizeState(friendLike?.state || friendLike?.ref?.state);
+    const accessLevel = firstNonEmptyString(
+        friendLike?.resonite?.accessLevel,
+        friendLike?.resonite?.realtime?.accessLevel,
+        friendLike?.ref?.resonite?.accessLevel
+    );
     const rawLocation = firstNonEmptyString(
         friendLike?.ref?.traveling,
         friendLike?.ref?.location,
@@ -76,10 +98,15 @@ function buildResoniteLocationSnapshot(friendLike) {
         };
     }
 
+    const formattedLocation = formatResoniteWorldLabel(
+        rawLocation,
+        accessLevel
+    );
+
     return {
-        label: rawLocation,
-        location: rawLocation,
-        worldName: rawLocation,
+        label: formattedLocation,
+        location: formattedLocation,
+        worldName: formattedLocation,
         isPrivate: false,
         isOffline: false
     };
@@ -127,7 +154,7 @@ export function buildResonitePresenceFeedUpdate(
     const nextState = normalizeState(nextFriend?.state);
     const previousLocation = buildResoniteLocationSnapshot(previousFriend);
     const nextLocation = buildResoniteLocationSnapshot(nextFriend);
-    const previousVisibleLocation = firstNonEmptyString(
+    const previousVisibleLocation = firstMeaningfulLocation(
         previousLocation.location,
         refPatch.$previousLocation
     );
@@ -158,9 +185,12 @@ export function buildResonitePresenceFeedUpdate(
             feedEntries.push({
                 ...feedBase,
                 type: 'Offline',
-                location: previousLocation.location || nextLocation.location,
+                location: previousVisibleLocation || nextLocation.location,
                 worldName:
-                    previousLocation.worldName || nextLocation.worldName || '',
+                    previousLocation.worldName ||
+                    previousVisibleLocation ||
+                    nextLocation.worldName ||
+                    '',
                 groupName: '',
                 time: Math.max(0, ts - previousLocationAt)
             });

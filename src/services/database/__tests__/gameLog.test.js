@@ -120,6 +120,34 @@ describe('gameLog.getUserStats', () => {
         expect(mocks.execute).toHaveBeenCalledTimes(3);
     });
 
+    test('uses explicit provider hint for Resonite users even when id shape is not prefixed', async () => {
+        mocks.execute.mockImplementation(async (callback, _sql, params) => {
+            expect(params).toEqual({ '@userId': 'external-user-1' });
+            callback([0]);
+        });
+
+        const result = await gameLog.getUserStats(
+            {
+                id: 'external-user-1',
+                provider: 'resonite',
+                displayName: 'External Resonite User'
+            },
+            false
+        );
+
+        expect(result).toEqual({
+            timeSpent: 0,
+            lastSeen: '',
+            joinCount: 0,
+            userId: 'external-user-1',
+            previousDisplayNames: new Map()
+        });
+        expect(mocks.execute).toHaveBeenCalledTimes(3);
+        for (const [, sql] of mocks.execute.mock.calls) {
+            expect(sql).not.toContain('gamelog_join_leave');
+        }
+    });
+
     test('excludes synthetic private locations from Resonite join counts', async () => {
         mocks.execute.mockImplementation(async (callback, sql) => {
             if (sql.includes('MAX(created_at)')) {
@@ -214,6 +242,58 @@ describe('gameLog.getUserStats', () => {
             ])
         );
     });
+
+    test('uses explicit provider hints for bulk Resonite stats when ids do not match legacy heuristics', async () => {
+        mocks.execute.mockImplementation(async (callback, sql) => {
+            if (sql.includes('ORDER BY user_id ASC, created_at DESC')) {
+                callback([
+                    '2026-04-22T07:44:00.000Z',
+                    'external-user-1',
+                    'Hinted Resonite',
+                    'The Fishing Mall',
+                    1_200_000
+                ]);
+                return;
+            }
+
+            if (sql.includes('gamelog_join_leave')) {
+                callback([
+                    '2026-04-21T05:00:00.000Z',
+                    'usr_vrchat_1',
+                    600_000,
+                    1,
+                    'VRChatUser'
+                ]);
+            }
+        });
+
+        const result = await gameLog.getAllUserStats(
+            ['usr_vrchat_1', 'external-user-1'],
+            ['VRChatUser', 'Hinted Resonite'],
+            {
+                'external-user-1': 'resonite'
+            }
+        );
+
+        expect(result).toEqual(
+            expect.arrayContaining([
+                {
+                    lastSeen: '2026-04-21T05:00:00.000Z',
+                    userId: 'usr_vrchat_1',
+                    timeSpent: 600_000,
+                    joinCount: 1,
+                    displayName: 'VRChatUser'
+                },
+                {
+                    lastSeen: '2026-04-22T07:44:00.000Z',
+                    userId: 'external-user-1',
+                    timeSpent: 1_200_000,
+                    joinCount: 1,
+                    displayName: 'Hinted Resonite'
+                }
+            ])
+        );
+    });
 });
 
 describe('gameLog.getPreviousInstancesByUserId', () => {
@@ -283,6 +363,48 @@ describe('gameLog.getPreviousInstancesByUserId', () => {
                 groupName: '',
                 events: [],
                 last_ts: Date.parse('2026-04-22T07:30:00.000Z')
+            }
+        ]);
+        expect(mocks.execute).toHaveBeenCalledTimes(1);
+        expect(mocks.execute.mock.calls[0][1]).not.toContain(
+            'gamelog_join_leave'
+        );
+    });
+
+    test('uses explicit provider hint for Resonite previous instances when id shape is not prefixed', async () => {
+        mocks.execute.mockImplementation(async (callback, sql) => {
+            if (
+                sql.includes('_feed_online_offline') &&
+                sql.includes('_feed_gps')
+            ) {
+                callback([
+                    '2026-04-22T06:00:00.000Z',
+                    Date.parse('2026-04-22T06:00:00.000Z'),
+                    'The Fishing Mall',
+                    'The Fishing Mall',
+                    '',
+                    '',
+                    null,
+                    'Online'
+                ]);
+            }
+        });
+
+        const result = await gameLog.getPreviousInstancesByUserId({
+            id: 'external-user-1',
+            provider: 'resonite',
+            displayName: 'Hinted Resonite'
+        });
+
+        expect(Array.from(result)).toEqual([
+            {
+                created_at: '2026-04-22T06:00:00.000Z',
+                location: 'The Fishing Mall',
+                time: 0,
+                worldName: 'The Fishing Mall',
+                groupName: '',
+                events: [],
+                last_ts: Date.parse('2026-04-22T06:00:00.000Z')
             }
         ]);
         expect(mocks.execute).toHaveBeenCalledTimes(1);

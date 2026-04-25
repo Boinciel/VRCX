@@ -2217,15 +2217,23 @@
         },
         "resonite_integration": {
             "header": "Resonite Integration",
-            "description": "Configure your Resonite friends API endpoint to show Resonite friends in the friends list.",
-            "login_section": "Sign in to Resonite to generate your API key automatically",
+            "description": "Configure your Resonite contacts API endpoint to show Resonite contacts in the friends list.",
+            "login_section": "Sign in to Resonite",
+            "advanced_section": "Advanced Config",
+            "advanced_description": "Adjust the endpoint, API key, refresh cadence, and how Resonite credentials are retained locally.",
             "username": "Resonite Username",
             "username_placeholder": "Enter your Resonite username",
             "password": "Resonite Password",
             "password_placeholder": "Enter your Resonite password",
             "totp": "2FA Code (Optional)",
             "totp_placeholder": "123456",
-            "login_generate_key": "Sign In and Generate API Key",
+            "remember_me": "Remember Me",
+            "remember_me_description": "Requests a longer-lived Resonite session.",
+            "remember_username": "Remember username",
+            "remember_password": "Remember password",
+            "auto_refresh_token": "Auto-refresh expired token using stored password",
+            "auto_refresh_token_description": "Requires remembered username and password - will not work with 2FA accounts.",
+            "login_generate_key": "Sign In to Resonite",
             "login_in_progress": "Signing in...",
             "endpoint": "API Endpoint",
             "endpoint_placeholder": "https://your-resonite-api.example.com/friends",
@@ -3192,4 +3200,3 @@
         "now_playing": "Now Playing"
     }
 }
-
