@@ -10,6 +10,11 @@ import {
     getFriendsSortFunction,
     isRealInstance
 } from '../shared/utils';
+import {
+    isResoniteContactLike,
+    normalizeResoniteHandle,
+    stripResonitePrefix
+} from '../shared/utils/resonite';
 import { getUserMemo } from '../coordinators/memoCoordinator';
 import { friendRequest, userRequest } from '../api';
 import { runInitFriendsListFlow } from '../coordinators/friendSyncCoordinator';
@@ -26,12 +31,20 @@ import { applyUser } from '../coordinators/userCoordinator';
 import { AppDebug } from '../services/appConfig';
 import { database } from '../services/database';
 import { buildResonitePresenceFeedUpdate } from '../services/resoniteFeedEvents';
-import { fetchResoniteFriends } from '../services/resoniteFriends';
+import {
+    fetchResoniteFriends,
+    mergeResoniteUserProfile
+} from '../services/resoniteFriends';
+import {
+    shouldPreferIncomingResoniteContactFields,
+    upsertResoniteMergeTraceField
+} from '../services/resoniteMerge';
 import {
     clearResoniteRealtimeState,
     ensureResoniteRealtimePresence,
     hydratePersistedResoniteRealtimeState,
     mergeResoniteRealtimePresence,
+    reconcileResoniteRealtimeAgainstSnapshot,
     setResoniteRealtimePresenceListener,
     stopResoniteRealtimePresence
 } from '../services/resoniteRealtime';
@@ -54,9 +67,10 @@ import configRepository from '../services/config';
 import * as workerTimers from 'worker-timers';
 
 export const useFriendStore = defineStore('Friend', () => {
-    const RESONITE_SNAPSHOT_CACHE_VERSION = 1;
     const RESONITE_SNAPSHOT_CACHE_MAX_AGE_MS = 1000 * 60 * 60 * 12;
     const RESONITE_SNAPSHOT_CACHE_MAX_FRIENDS = 300;
+    const RESONITE_SNAPSHOT_MAX_BACKOFF_MS = 1000 * 60 * 30;
+    const RESONITE_PRESENCE_MAX_BACKOFF_MS = 1000 * 60 * 30;
 
     const appearanceSettingsStore = useAppearanceSettingsStore();
     const advancedSettingsStore = useAdvancedSettingsStore();
@@ -416,6 +430,49 @@ export const useFriendStore = defineStore('Friend', () => {
         return result;
     });
 
+    const resoniteFriendsInSameSession = computed(() => {
+        const sessionGroups = {};
+
+        sortedFriends.value.forEach((friend) => {
+            if (friend.provider !== 'resonite' || friend.state !== 'online') {
+                return;
+            }
+            const sessionHash = String(
+                friend.resonite?.currentSessionHash ||
+                    friend.resonite?.realtime?.currentSessionHash ||
+                    friend.ref?.resonite?.currentSessionHash ||
+                    friend.ref?.resonite?.realtime?.currentSessionHash ||
+                    ''
+            ).trim();
+            if (!sessionHash) {
+                return;
+            }
+            const accessLevel = String(
+                friend.resonite?.accessLevel ||
+                    friend.resonite?.realtime?.accessLevel ||
+                    friend.ref?.resonite?.accessLevel ||
+                    friend.ref?.resonite?.realtime?.accessLevel ||
+                    ''
+            ).trim();
+            if (accessLevel === 'private') {
+                return;
+            }
+            if (!sessionGroups[sessionHash]) {
+                sessionGroups[sessionHash] = [];
+            }
+            sessionGroups[sessionHash].push(friend);
+        });
+
+        const sortedSessionList = [];
+        for (const group of Object.values(sessionGroups)) {
+            if (group.length > 1) {
+                sortedSessionList.push(group);
+            }
+        }
+
+        return sortedSessionList.sort((a, b) => b.length - a.length);
+    });
+
     watch(
         () => watchState.isLoggedIn,
         (isLoggedIn) => {
@@ -476,8 +533,9 @@ export const useFriendStore = defineStore('Friend', () => {
                 return;
             }
 
-            const normalizedPreviousUserId = normalizeHandle(previousUserId);
-            const normalizedNextUserId = normalizeHandle(nextUserId);
+            const normalizedPreviousUserId =
+                normalizeResoniteHandle(previousUserId);
+            const normalizedNextUserId = normalizeResoniteHandle(nextUserId);
             if (
                 !normalizedPreviousUserId ||
                 normalizedPreviousUserId === normalizedNextUserId
@@ -924,8 +982,12 @@ export const useFriendStore = defineStore('Friend', () => {
         let item;
         const userIds = [];
         const displayNames = [];
+        const providerHints = {};
         for (const ctx of friends.values()) {
             userIds.push(ctx.id);
+            if (ctx.provider) {
+                providerHints[ctx.id] = ctx.provider;
+            }
             if (ctx.ref?.displayName) {
                 displayNames.push(ctx.ref.displayName);
             }
@@ -936,7 +998,11 @@ export const useFriendStore = defineStore('Friend', () => {
 
         const requestId = ++allUserStatsRequestId;
 
-        const data = await database.getAllUserStats(userIds, displayNames);
+        const data = await database.getAllUserStats(
+            userIds,
+            displayNames,
+            providerHints
+        );
         if (requestId !== allUserStatsRequestId) {
             return;
         }
@@ -1525,28 +1591,9 @@ export const useFriendStore = defineStore('Friend', () => {
                 getResonitePersistenceScopeKey(currentUserId)
             );
 
-            const persisted = await configRepository.getObject(
-                getResoniteSnapshotConfigKey(currentUserId)
+            const snapshot = mergeResoniteRealtimePresence(
+                await loadPersistedResoniteSnapshot()
             );
-
-            if (!persisted || typeof persisted !== 'object') {
-                return false;
-            }
-
-            const persistedAt = Number(persisted.persistedAt || 0);
-            if (
-                !persistedAt ||
-                Date.now() - persistedAt > RESONITE_SNAPSHOT_CACHE_MAX_AGE_MS
-            ) {
-                return false;
-            }
-
-            const snapshot = Array.isArray(persisted.friends)
-                ? persisted.friends.filter(
-                      (friendData) =>
-                          friendData?.provider === 'resonite' && friendData?.id
-                  )
-                : [];
 
             if (snapshot.length === 0) {
                 return false;
@@ -1645,9 +1692,7 @@ export const useFriendStore = defineStore('Friend', () => {
 
         if (clearPersisted && persistenceUserId) {
             try {
-                await configRepository.remove(
-                    getResoniteSnapshotConfigKey(persistenceUserId)
-                );
+                await database.clearResoniteCache();
             } catch (error) {
                 console.warn(
                     '[ResoniteIntegration] Failed to clear persisted Resonite snapshot:',
@@ -1671,21 +1716,20 @@ export const useFriendStore = defineStore('Friend', () => {
             return;
         }
 
-        const payload = buildPersistedResoniteSnapshotPayload(snapshot);
         if (persistResoniteSnapshotTimer) {
             clearTimeout(persistResoniteSnapshotTimer);
         }
 
         persistResoniteSnapshotTimer = setTimeout(() => {
             persistResoniteSnapshotTimer = null;
-            void configRepository
-                .setObject(getResoniteSnapshotConfigKey(currentUserId), payload)
-                .catch((error) => {
+            void persistResoniteSnapshotCache(snapshot, currentUserId).catch(
+                (error) => {
                     console.warn(
                         '[ResoniteIntegration] Failed to persist Resonite snapshot:',
                         error
                     );
-                });
+                }
+            );
         }, 500);
     }
 
@@ -1699,6 +1743,15 @@ export const useFriendStore = defineStore('Friend', () => {
             const persistenceScopeKey = getResonitePersistenceScopeKey(
                 userStore.currentUser?.id
             );
+            const refreshAttemptedAt = Date.now();
+
+            if (persistenceScopeKey) {
+                await recordResoniteSnapshotRefreshState({
+                    scope: persistenceScopeKey,
+                    phase: 'attempt',
+                    lastAttemptAt: refreshAttemptedAt
+                });
+            }
 
             if (persistenceScopeKey) {
                 await hydratePersistedResoniteRealtimeState(
@@ -1718,6 +1771,12 @@ export const useFriendStore = defineStore('Friend', () => {
                   : [];
 
             if (!fetchSucceeded) {
+                await recordResoniteSnapshotRefreshState({
+                    scope: persistenceScopeKey,
+                    phase: 'failure',
+                    lastAttemptAt: refreshAttemptedAt,
+                    lastErrorText: 'fetch-failed'
+                });
                 console.warn(
                     '[ResoniteIntegration] Resonite friends refresh failed; preserving existing contacts until a successful snapshot arrives'
                 );
@@ -1725,6 +1784,12 @@ export const useFriendStore = defineStore('Friend', () => {
             }
 
             if (!Array.isArray(resoniteFriendsList)) {
+                await recordResoniteSnapshotRefreshState({
+                    scope: persistenceScopeKey,
+                    phase: 'failure',
+                    lastAttemptAt: refreshAttemptedAt,
+                    lastErrorText: 'invalid-friends-payload'
+                });
                 console.warn(
                     '[ResoniteIntegration] fetchResoniteFriends returned non-array'
                 );
@@ -1735,23 +1800,58 @@ export const useFriendStore = defineStore('Friend', () => {
                 await stopResoniteRealtimePresence();
             }
 
-            await ensureResoniteRealtimePresence({
-                enabled: advancedSettingsStore.resoniteIntegration,
-                apiKey: advancedSettingsStore.resoniteApiKey,
-                persistenceKey: persistenceScopeKey,
-                contactUserIds: resoniteFriendsList.map((friendData) =>
-                    stripResonitePrefix(friendData?.id)
-                )
-            });
+            const shouldAttemptRealtime =
+                advancedSettingsStore.resoniteIntegration &&
+                (await shouldAttemptResoniteRealtimeRefresh(
+                    persistenceScopeKey,
+                    refreshAttemptedAt
+                ));
+
+            if (shouldAttemptRealtime) {
+                await recordResonitePresenceRefreshState({
+                    scope: persistenceScopeKey,
+                    phase: 'attempt',
+                    lastAttemptAt: refreshAttemptedAt
+                });
+
+                const realtimeEnabled = await ensureResoniteRealtimePresence({
+                    enabled: advancedSettingsStore.resoniteIntegration,
+                    apiKey: advancedSettingsStore.resoniteApiKey,
+                    persistenceKey: persistenceScopeKey,
+                    contactUserIds: resoniteFriendsList.map((friendData) =>
+                        stripResonitePrefix(friendData?.id)
+                    )
+                });
+
+                if (realtimeEnabled) {
+                    await recordResonitePresenceRefreshState({
+                        scope: persistenceScopeKey,
+                        phase: 'success',
+                        lastAttemptAt: refreshAttemptedAt,
+                        lastSuccessfulPresenceAt: refreshAttemptedAt
+                    });
+                } else {
+                    await recordResonitePresenceRefreshState({
+                        scope: persistenceScopeKey,
+                        phase: 'failure',
+                        lastAttemptAt: refreshAttemptedAt,
+                        lastErrorText: 'realtime-connect-failed'
+                    });
+                }
+            }
+
+            reconcileResoniteRealtimeAgainstSnapshot(resoniteFriendsList);
 
             const enrichedResoniteFriendsList =
                 mergeResoniteRealtimePresence(resoniteFriendsList);
             lastResoniteFriendsSnapshot.value = enrichedResoniteFriendsList;
             schedulePersistResoniteState(enrichedResoniteFriendsList);
 
-            setResoniteRealtimePresenceListener(() => {
-                applyRealtimeResonitePresenceUpdates();
-            });
+            if (advancedSettingsStore.resoniteIntegration) {
+                setResoniteRealtimePresenceListener(() => {
+                    applyRealtimeResonitePresenceUpdates();
+                });
+            }
 
             const selfContactId = await applyResonitePresenceToCurrentUser(
                 enrichedResoniteFriendsList
@@ -1778,8 +1878,25 @@ export const useFriendStore = defineStore('Friend', () => {
 
             removeStaleResoniteFriends(currentResoniteIds);
 
+            await recordResoniteSnapshotRefreshState({
+                scope: persistenceScopeKey,
+                phase: 'success',
+                lastAttemptAt: refreshAttemptedAt,
+                lastSuccessfulSnapshotAt: Date.now(),
+                lastErrorText: ''
+            });
+
             return enrichedResoniteFriendsList;
         } catch (error) {
+            await recordResoniteSnapshotRefreshState({
+                scope: getResonitePersistenceScopeKey(
+                    userStore.currentUser?.id
+                ),
+                phase: 'failure',
+                lastAttemptAt: Date.now(),
+                lastErrorText:
+                    error?.message || String(error || 'unknown-error')
+            });
             console.error(
                 '[ResoniteIntegration] Error refreshing Resonite friends:',
                 error
@@ -1861,38 +1978,44 @@ export const useFriendStore = defineStore('Friend', () => {
             console.warn(
                 '[ResoniteIntegration] No self-contact found in friends list. $resonitePresence will be null.'
             );
-            currentUser['$resonitePresence'] = null;
-            resoniteSelfFeedSnapshot = null;
+            clearCurrentUserResonitePresence(currentUser);
             return '';
         }
 
         persistResoniteSelfPresenceFeedEntries(selfContact);
+        const resonitePresencePayload =
+            buildResoniteCurrentUserPresence(selfContact);
+        currentUser['$resonitePresence'] = resonitePresencePayload;
 
-        const status = mapResoniteStatusToVrchatStatus(
-            selfContact?.ref?.status,
-            selfContact?.state
+        logAppliedResoniteCurrentUserPresence(
+            selfContact,
+            resonitePresencePayload
         );
-        const avatarUrl = firstNonEmptyString(
-            selfContact?.ref?.profileImageUrl,
-            selfContact?.ref?.userIcon,
-            selfContact?.resonite?.profile?.iconUrl
-        );
-        const statusDescription = firstNonEmptyString(
-            selfContact?.ref?.statusDescription,
-            selfContact?.resonite?.profile?.tagline,
-            selfContact?.resonite?.profile?.description
-        );
+
+        return String(selfContact?.id || '');
+    }
+
+    function clearCurrentUserResonitePresence(currentUser) {
+        currentUser['$resonitePresence'] = null;
+        resoniteSelfFeedSnapshot = null;
+    }
+
+    function getResonitePresenceLocationName(selfContact) {
         const rawLocationName = firstNonEmptyString(
             selfContact?.ref?.traveling,
             selfContact?.ref?.location,
             selfContact?.resonite?.locationName
         );
-        const locationName =
-            selfContact?.state === 'online' && rawLocationName === 'offline'
-                ? ''
-                : rawLocationName;
 
-        const resonitePresencePayload = {
+        return selfContact?.state === 'online' && rawLocationName === 'offline'
+            ? ''
+            : rawLocationName;
+    }
+
+    function buildResoniteCurrentUserPresence(selfContact) {
+        const locationName = getResonitePresenceLocationName(selfContact);
+
+        return {
             isActive: true,
             source: 'resonite',
             linkedContactId: String(selfContact?.id || '').trim(),
@@ -1903,10 +2026,21 @@ export const useFriendStore = defineStore('Friend', () => {
                 selfContact?.name,
                 selfContact?.ref?.displayName
             ),
-            status,
+            status: mapResoniteStatusToVrchatStatus(
+                selfContact?.ref?.status,
+                selfContact?.state
+            ),
             state: selfContact?.state || 'offline',
-            statusDescription,
-            avatarUrl,
+            statusDescription: firstNonEmptyString(
+                selfContact?.ref?.statusDescription,
+                selfContact?.resonite?.profile?.tagline,
+                selfContact?.resonite?.profile?.description
+            ),
+            avatarUrl: firstNonEmptyString(
+                selfContact?.ref?.profileImageUrl,
+                selfContact?.ref?.userIcon,
+                selfContact?.resonite?.profile?.iconUrl
+            ),
             locationName,
             currentSessionName: firstNonEmptyString(
                 selfContact?.resonite?.currentSessionName,
@@ -1924,8 +2058,12 @@ export const useFriendStore = defineStore('Friend', () => {
                 selfContact?.resonite?.appVersion
             )
         };
-        currentUser['$resonitePresence'] = resonitePresencePayload;
+    }
 
+    function logAppliedResoniteCurrentUserPresence(
+        selfContact,
+        resonitePresencePayload
+    ) {
         console.debug(
             '[ResoniteIntegration] $resonitePresence applied to currentUser:',
             JSON.stringify(resonitePresencePayload, null, 2)
@@ -1949,8 +2087,6 @@ export const useFriendStore = defineStore('Friend', () => {
                 2
             )
         );
-
-        return String(selfContact?.id || '');
     }
 
     function buildResoniteSelfFeedSnapshot(selfContact) {
@@ -1994,13 +2130,21 @@ export const useFriendStore = defineStore('Friend', () => {
                 ).trim(),
                 location:
                     locationName || (state === 'offline' ? 'offline' : ''),
-                traveling: locationName || ''
+                traveling: locationName || '',
+                resonite: {
+                    accessLevel: String(
+                        selfContact?.resonite?.accessLevel || ''
+                    ).trim()
+                }
             },
             resonite: {
                 userId: firstNonEmptyString(
                     selfContact?.resonite?.userId,
                     stripResonitePrefix(contactId)
                 ),
+                accessLevel: String(
+                    selfContact?.resonite?.accessLevel || ''
+                ).trim(),
                 locationName,
                 currentSessionName: firstNonEmptyString(
                     selfContact?.resonite?.currentSessionName,
@@ -2065,8 +2209,8 @@ export const useFriendStore = defineStore('Friend', () => {
         resoniteFriendsList,
         { username = '', userId = '' }
     ) {
-        const normalizedUsername = normalizeHandle(username);
-        const normalizedUserId = normalizeHandle(userId);
+        const normalizedUsername = normalizeResoniteHandle(username);
+        const normalizedUserId = normalizeResoniteHandle(userId);
 
         for (const friendData of resoniteFriendsList) {
             const idCandidates = [
@@ -2083,7 +2227,8 @@ export const useFriendStore = defineStore('Friend', () => {
             if (
                 normalizedUserId &&
                 idCandidates.some(
-                    (value) => normalizeHandle(value) === normalizedUserId
+                    (value) =>
+                        normalizeResoniteHandle(value) === normalizedUserId
                 )
             ) {
                 return friendData;
@@ -2092,7 +2237,8 @@ export const useFriendStore = defineStore('Friend', () => {
             if (
                 normalizedUsername &&
                 nameCandidates.some(
-                    (value) => normalizeHandle(value) === normalizedUsername
+                    (value) =>
+                        normalizeResoniteHandle(value) === normalizedUsername
                 )
             ) {
                 return friendData;
@@ -2119,24 +2265,11 @@ export const useFriendStore = defineStore('Friend', () => {
         return withoutPrefix.slice(0, separatorIndex).trim();
     }
 
-    function normalizeHandle(value) {
-        return String(value || '')
-            .trim()
-            .toLowerCase();
-    }
-
-    function stripResonitePrefix(id) {
-        const value = String(id || '');
-        return value.startsWith('resonite:')
-            ? value.slice('resonite:'.length)
-            : value;
-    }
-
     function isResoniteSystemContact(friendData) {
-        const id = normalizeHandle(
+        const id = normalizeResoniteHandle(
             stripResonitePrefix(friendData?.id || friendData?.resonite?.userId)
         );
-        const displayName = normalizeHandle(
+        const displayName = normalizeResoniteHandle(
             firstNonEmptyString(friendData?.name, friendData?.ref?.displayName)
         );
 
@@ -2455,22 +2588,6 @@ export const useFriendStore = defineStore('Friend', () => {
         syncResoniteFriendLogCurrent(current);
     }
 
-    function isResoniteContactLike(friendLike) {
-        const resonite =
-            friendLike?.resonite || friendLike?.ref?.resonite || {};
-
-        return Boolean(
-            friendLike?.ref?.contactStatus ||
-            resonite.contactStatus ||
-            friendLike?.ref?.contactUsername ||
-            resonite.contactUsername ||
-            friendLike?.ref?.latestMessageTime ||
-            resonite.latestMessageTime ||
-            friendLike?.ref?.isAccepted !== undefined ||
-            resonite.isAccepted !== undefined
-        );
-    }
-
     function recordResoniteUnfriendship(friendId, existingFriend) {
         const userId = String(friendId || '').trim();
         if (!userId) {
@@ -2583,8 +2700,14 @@ export const useFriendStore = defineStore('Friend', () => {
         );
         const existingFriend = friends.get(friendId);
         const nextState = String(normalizedIncoming.state || 'offline').trim();
+        const incomingPresenceIsAuthoritative =
+            normalizedIncoming?.resonite?.hasPresenceSignals !== false;
 
-        if (existingFriend?.state === 'online' && nextState === 'offline') {
+        if (
+            existingFriend?.state === 'online' &&
+            nextState === 'offline' &&
+            incomingPresenceIsAuthoritative
+        ) {
             queuePendingResoniteOffline(friendId, normalizedIncoming);
             return;
         }
@@ -2623,7 +2746,7 @@ export const useFriendStore = defineStore('Friend', () => {
 
     /**
      * Merge sparse incoming Resonite payloads with an existing friend entry,
-     * preserving last-known world/session fields until better data arrives.
+     * preserving live world/session fields only when newer realtime evidence exists.
      *
      * @param {Object} incoming
      * @param {Object|undefined} existingCtx
@@ -2640,22 +2763,233 @@ export const useFriendStore = defineStore('Friend', () => {
             }
         };
 
+        normalizedIncoming.ref.resonite = {
+            ...(normalizedIncoming.ref.resonite || {}),
+            ...(normalizedIncoming.resonite || {})
+        };
+
         if (!existingCtx?.ref) {
             return normalizedIncoming;
         }
 
         const existingRef = existingCtx.ref;
-        const existingResonite = existingRef?.resonite || {};
+        const existingResonite = {
+            ...(existingRef?.resonite || {}),
+            ...(existingCtx?.resonite || {})
+        };
         const incomingRef = normalizedIncoming.ref;
         const incomingResonite = normalizedIncoming.resonite;
+        const incomingPresenceIsAuthoritative =
+            incomingResonite.hasPresenceSignals !== false;
+        let mergeTrace = {
+            ...(existingResonite.mergeTrace || {}),
+            ...(incomingResonite.mergeTrace || {})
+        };
+        const preferIncomingContactFields =
+            shouldPreferIncomingResoniteContactFields(
+                existingResonite.contactObservedAt,
+                incomingResonite.contactObservedAt
+            );
+        const existingContactObservedAt = Number(
+            existingResonite.contactObservedAt || 0
+        );
+        const incomingContactObservedAt = Number(
+            incomingResonite.contactObservedAt || 0
+        );
+        const existingRealtimeObservedAt = Number(
+            existingResonite.realtime?.updatedAt || 0
+        );
+        const hasFreshExistingRealtimePresence =
+            String(existingCtx.state || '').trim() === 'online' &&
+            Number.isFinite(existingRealtimeObservedAt) &&
+            existingRealtimeObservedAt > 0 &&
+            (!incomingContactObservedAt ||
+                existingRealtimeObservedAt >= incomingContactObservedAt);
 
-        if (!normalizedIncoming.name && existingCtx.name) {
-            normalizedIncoming.name = existingCtx.name;
+        function recordContactMergeTrace(
+            field,
+            winner,
+            reason,
+            existingValue,
+            incomingValue,
+            selectedValue
+        ) {
+            mergeTrace = upsertResoniteMergeTraceField(
+                mergeTrace,
+                'contact',
+                field,
+                {
+                    winner,
+                    reason,
+                    existingObservedAt: existingContactObservedAt,
+                    incomingObservedAt: incomingContactObservedAt,
+                    existingValue,
+                    incomingValue,
+                    selectedValue
+                }
+            );
         }
 
-        if (!incomingRef.displayName && existingRef.displayName) {
-            incomingRef.displayName = existingRef.displayName;
+        function selectContactStringField(field, existingValue, incomingValue) {
+            const normalizedExisting = String(existingValue || '').trim();
+            const normalizedIncoming = String(incomingValue || '').trim();
+
+            if (!preferIncomingContactFields && normalizedExisting) {
+                recordContactMergeTrace(
+                    field,
+                    'existing',
+                    'existing-contact-newer',
+                    normalizedExisting,
+                    normalizedIncoming,
+                    normalizedExisting
+                );
+                return normalizedExisting;
+            }
+
+            if (normalizedIncoming) {
+                recordContactMergeTrace(
+                    field,
+                    'incoming',
+                    preferIncomingContactFields
+                        ? 'incoming-contact-newer-or-equal'
+                        : 'existing-missing',
+                    normalizedExisting,
+                    normalizedIncoming,
+                    normalizedIncoming
+                );
+                return normalizedIncoming;
+            }
+
+            if (normalizedExisting) {
+                recordContactMergeTrace(
+                    field,
+                    'existing',
+                    'incoming-missing',
+                    normalizedExisting,
+                    normalizedIncoming,
+                    normalizedExisting
+                );
+                return normalizedExisting;
+            }
+
+            recordContactMergeTrace(
+                field,
+                'incoming',
+                'no-contact-value',
+                normalizedExisting,
+                normalizedIncoming,
+                normalizedIncoming
+            );
+            return normalizedIncoming;
         }
+
+        function selectContactBooleanField(
+            field,
+            existingValue,
+            incomingValue
+        ) {
+            const hasExisting = typeof existingValue === 'boolean';
+            const hasIncoming = typeof incomingValue === 'boolean';
+
+            if (!preferIncomingContactFields && hasExisting) {
+                recordContactMergeTrace(
+                    field,
+                    'existing',
+                    'existing-contact-newer',
+                    existingValue,
+                    incomingValue,
+                    existingValue
+                );
+                return existingValue;
+            }
+
+            if (hasIncoming) {
+                recordContactMergeTrace(
+                    field,
+                    'incoming',
+                    preferIncomingContactFields
+                        ? 'incoming-contact-newer-or-equal'
+                        : 'existing-missing',
+                    existingValue,
+                    incomingValue,
+                    incomingValue
+                );
+                return incomingValue;
+            }
+
+            if (hasExisting) {
+                recordContactMergeTrace(
+                    field,
+                    'existing',
+                    'incoming-missing',
+                    existingValue,
+                    incomingValue,
+                    existingValue
+                );
+                return existingValue;
+            }
+
+            recordContactMergeTrace(
+                field,
+                'incoming',
+                'no-contact-value',
+                existingValue,
+                incomingValue,
+                incomingValue
+            );
+            return incomingValue;
+        }
+
+        normalizedIncoming.name = selectContactStringField(
+            'name',
+            existingCtx.name,
+            normalizedIncoming.name
+        );
+        incomingRef.displayName = selectContactStringField(
+            'displayName',
+            existingRef.displayName,
+            incomingRef.displayName
+        );
+
+        const selectedContactStatus = selectContactStringField(
+            'contactStatus',
+            firstNonEmptyString(
+                existingRef.contactStatus,
+                existingResonite.contactStatus
+            ),
+            firstNonEmptyString(
+                incomingRef.contactStatus,
+                incomingResonite.contactStatus
+            )
+        );
+        incomingRef.contactStatus = selectedContactStatus;
+        incomingResonite.contactStatus = selectedContactStatus;
+
+        const selectedLatestMessageTime = selectContactStringField(
+            'latestMessageTime',
+            firstNonEmptyString(
+                existingRef.latestMessageTime,
+                existingResonite.latestMessageTime
+            ),
+            firstNonEmptyString(
+                incomingRef.latestMessageTime,
+                incomingResonite.latestMessageTime
+            )
+        );
+        incomingRef.latestMessageTime = selectedLatestMessageTime;
+        incomingResonite.latestMessageTime = selectedLatestMessageTime;
+
+        const selectedIsAccepted = selectContactBooleanField(
+            'isAccepted',
+            existingRef.isAccepted ?? existingResonite.isAccepted,
+            incomingRef.isAccepted ?? incomingResonite.isAccepted
+        );
+        incomingRef.isAccepted = selectedIsAccepted;
+        incomingResonite.isAccepted = selectedIsAccepted;
+        incomingResonite.contactObservedAt =
+            preferIncomingContactFields && incomingContactObservedAt
+                ? incomingContactObservedAt
+                : existingContactObservedAt || incomingContactObservedAt || 0;
 
         incomingRef.last_activity = firstNonEmptyString(
             incomingRef.last_activity,
@@ -2673,6 +3007,85 @@ export const useFriendStore = defineStore('Friend', () => {
             incomingResonite.realtime?.lastStatusChange,
             existingResonite.realtime?.lastStatusChange
         );
+
+        if (
+            !incomingPresenceIsAuthoritative &&
+            hasFreshExistingRealtimePresence
+        ) {
+            normalizedIncoming.state = String(
+                existingCtx.state || normalizedIncoming.state || 'offline'
+            ).trim();
+            normalizedIncoming.status = firstNonEmptyString(
+                existingCtx.status,
+                existingRef.status,
+                normalizedIncoming.status
+            );
+            incomingRef.state = String(
+                existingCtx.state || incomingRef.state || 'offline'
+            ).trim();
+            incomingRef.status = firstNonEmptyString(
+                existingRef.status,
+                incomingRef.status
+            );
+            incomingRef.statusDescription = firstNonEmptyString(
+                existingRef.statusDescription,
+                incomingRef.statusDescription
+            );
+            incomingRef.location = firstNonEmptyString(
+                existingRef.location,
+                incomingRef.location
+            );
+            incomingRef.traveling = firstNonEmptyString(
+                existingRef.traveling,
+                incomingRef.traveling
+            );
+            incomingResonite.onlineStatus = firstNonEmptyString(
+                existingResonite.onlineStatus,
+                incomingResonite.onlineStatus
+            );
+            incomingResonite.locationName = firstNonEmptyString(
+                existingResonite.locationName,
+                incomingResonite.locationName
+            );
+            incomingResonite.currentSessionHash = firstNonEmptyString(
+                existingResonite.currentSessionHash,
+                existingResonite.realtime?.currentSessionHash,
+                incomingResonite.currentSessionHash
+            );
+            incomingResonite.currentSessionName = firstNonEmptyString(
+                existingResonite.currentSessionName,
+                existingResonite.realtime?.currentSessionName,
+                incomingResonite.currentSessionName
+            );
+            incomingResonite.sessionType = firstNonEmptyString(
+                existingResonite.sessionType,
+                incomingResonite.sessionType
+            );
+            incomingResonite.outputDevice = firstNonEmptyString(
+                existingResonite.outputDevice,
+                incomingResonite.outputDevice
+            );
+            incomingResonite.appVersion = firstNonEmptyString(
+                existingResonite.appVersion,
+                incomingResonite.appVersion
+            );
+            incomingResonite.userSessionId = firstNonEmptyString(
+                existingResonite.userSessionId,
+                incomingResonite.userSessionId
+            );
+            incomingResonite.compatibilityHash = firstNonEmptyString(
+                existingResonite.compatibilityHash,
+                incomingResonite.compatibilityHash
+            );
+            incomingResonite.isPresent =
+                typeof existingResonite.isPresent === 'boolean'
+                    ? existingResonite.isPresent
+                    : incomingResonite.isPresent;
+            incomingResonite.isMobile =
+                typeof existingResonite.isMobile === 'boolean'
+                    ? existingResonite.isMobile
+                    : incomingResonite.isMobile;
+        }
 
         const incomingLocation = String(incomingRef.location || '').trim();
         const incomingTraveling = String(incomingRef.traveling || '').trim();
@@ -2692,11 +3105,31 @@ export const useFriendStore = defineStore('Friend', () => {
                 existingRef.statusDescription
             );
             if (!hasIncomingLiveSession) {
-                incomingRef.location = '';
-                incomingRef.traveling = '';
-                incomingResonite.locationName = '';
-                incomingResonite.currentSessionHash = '';
-                incomingResonite.currentSessionName = '';
+                incomingRef.location = firstNonEmptyString(
+                    incomingRef.location !== 'offline'
+                        ? incomingRef.location
+                        : '',
+                    existingRef.location !== 'offline'
+                        ? existingRef.location
+                        : ''
+                );
+                incomingRef.traveling = firstNonEmptyString(
+                    incomingRef.traveling
+                );
+                incomingResonite.locationName = firstNonEmptyString(
+                    incomingResonite.locationName,
+                    existingResonite.locationName
+                );
+                incomingResonite.currentSessionHash = firstNonEmptyString(
+                    incomingResonite.currentSessionHash,
+                    existingResonite.currentSessionHash,
+                    existingResonite.realtime?.currentSessionHash
+                );
+                incomingResonite.currentSessionName = firstNonEmptyString(
+                    incomingResonite.currentSessionName,
+                    existingResonite.currentSessionName,
+                    existingResonite.realtime?.currentSessionName
+                );
             }
         } else {
             incomingRef.location = 'offline';
@@ -2712,6 +3145,7 @@ export const useFriendStore = defineStore('Friend', () => {
             ...existingResonite,
             ...incomingRef.resonite,
             ...incomingResonite,
+            mergeTrace,
             realtime: {
                 ...(existingResonite.realtime || {}),
                 ...(incomingRef.resonite?.realtime || {}),
@@ -2730,27 +3164,299 @@ export const useFriendStore = defineStore('Friend', () => {
         return normalized ? `vrcx-user-${normalized}` : '';
     }
 
-    function getResoniteSnapshotConfigKey(currentUserId) {
-        const normalized = String(currentUserId || '')
-            .trim()
-            .toLowerCase();
-        return `VRCX_resoniteFriendsSnapshot_${normalized}`;
+    async function loadPersistedResoniteSnapshot() {
+        return await loadPersistedResoniteSnapshotFromDatabase();
     }
 
-    function buildPersistedResoniteSnapshotPayload(snapshot) {
-        const friendsSnapshot = Array.isArray(snapshot)
+    async function loadPersistedResoniteSnapshotFromDatabase() {
+        const cachedContacts = await database.getResoniteCachedContacts();
+        if (!Array.isArray(cachedContacts) || cachedContacts.length === 0) {
+            return [];
+        }
+
+        const now = Date.now();
+        const freshCachedContacts = cachedContacts.filter((entry) =>
+            isFreshResoniteCachedContact(entry, now)
+        );
+        if (freshCachedContacts.length === 0) {
+            return [];
+        }
+
+        const latestSnapshotAt = freshCachedContacts.reduce(
+            (latest, entry) =>
+                Math.max(latest, Number(entry?.lastSuccessfulSnapshotAt || 0)),
+            0
+        );
+        if (
+            !latestSnapshotAt ||
+            now - latestSnapshotAt > RESONITE_SNAPSHOT_CACHE_MAX_AGE_MS
+        ) {
+            return [];
+        }
+
+        const profileEntries =
+            await loadResoniteCachedProfilesForContacts(freshCachedContacts);
+        const profilesByUserId = new Map(
+            profileEntries.map((entry) => [entry.resoniteUserId, entry.payload])
+        );
+
+        return freshCachedContacts
+            .map((entry) => {
+                const sanitizedFriend = sanitizePersistedResoniteFriend(
+                    entry?.payload
+                );
+                if (!sanitizedFriend) {
+                    return null;
+                }
+
+                const profilePayload = profilesByUserId.get(
+                    String(
+                        sanitizedFriend?.resonite?.userId ||
+                            stripResonitePrefix(sanitizedFriend.id)
+                    ).trim()
+                );
+                return profilePayload
+                    ? mergeResoniteUserProfile(sanitizedFriend, profilePayload)
+                    : sanitizedFriend;
+            })
+            .filter(Boolean)
+            .slice(0, RESONITE_SNAPSHOT_CACHE_MAX_FRIENDS);
+    }
+
+    function isFreshResoniteCachedContact(entry, now = Date.now()) {
+        const lastSuccessfulSnapshotAt = Number(
+            entry?.lastSuccessfulSnapshotAt || 0
+        );
+        const fetchedAt = Number(entry?.fetchedAt || 0);
+        const freshnessAnchor = Math.max(lastSuccessfulSnapshotAt, fetchedAt);
+
+        return (
+            freshnessAnchor > 0 &&
+            now - freshnessAnchor <= RESONITE_SNAPSHOT_CACHE_MAX_AGE_MS
+        );
+    }
+
+    async function loadResoniteCachedProfilesForContacts(cachedContacts) {
+        const cachedUserIds = [
+            ...new Set(
+                (Array.isArray(cachedContacts) ? cachedContacts : [])
+                    .map((entry) =>
+                        firstNonEmptyString(
+                            entry?.resoniteUserId,
+                            entry?.payload?.resonite?.userId,
+                            stripResonitePrefix(entry?.externalId),
+                            stripResonitePrefix(entry?.payload?.id)
+                        )
+                    )
+                    .filter(Boolean)
+            )
+        ];
+
+        if (cachedUserIds.length === 0) {
+            return [];
+        }
+
+        const now = Date.now();
+        const cachedProfiles =
+            await database.getResoniteCachedProfiles(cachedUserIds);
+        return (Array.isArray(cachedProfiles) ? cachedProfiles : []).filter(
+            (entry) => {
+                const userId = String(entry?.resoniteUserId || '').trim();
+                const expiresAt = Number(entry?.expiresAt || 0);
+                return (
+                    Boolean(userId) &&
+                    entry?.payload &&
+                    typeof entry.payload === 'object' &&
+                    (expiresAt <= 0 || expiresAt > now)
+                );
+            }
+        );
+    }
+
+    async function persistResoniteSnapshotCache(snapshot, currentUserId) {
+        const persistedAt = Date.now();
+        const cachedContacts = Array.isArray(snapshot)
             ? snapshot
                   .map((friendData) =>
-                      sanitizePersistedResoniteFriend(friendData)
+                      buildResoniteCachedContactEntry(friendData, persistedAt)
                   )
                   .filter(Boolean)
                   .slice(0, RESONITE_SNAPSHOT_CACHE_MAX_FRIENDS)
             : [];
 
+        await database.replaceResoniteCachedContacts(cachedContacts);
+        await database.setResoniteSyncState({
+            scope: getResonitePersistenceScopeKey(currentUserId),
+            lastAttemptAt: persistedAt,
+            lastSuccessfulSnapshotAt: persistedAt,
+            snapshotRevision: String(persistedAt),
+            activeResoniteUserId: parseResoniteUserIdFromApiKey(
+                advancedSettingsStore.resoniteApiKey
+            )
+        });
+    }
+
+    async function recordResoniteSnapshotRefreshState({
+        scope,
+        phase = 'attempt',
+        lastAttemptAt = 0,
+        lastSuccessfulSnapshotAt,
+        lastErrorText = ''
+    }) {
+        await recordResoniteRefreshState({
+            scope,
+            phase,
+            lastAttemptAt,
+            lastSuccessfulAt: lastSuccessfulSnapshotAt,
+            lastErrorText,
+            successField: 'lastSuccessfulSnapshotAt',
+            failureCountField: 'snapshotFailureCount',
+            nextRetryField: 'nextSnapshotRetryAt',
+            failureFallbackError: 'refresh-failed',
+            maxBackoffMs: RESONITE_SNAPSHOT_MAX_BACKOFF_MS
+        });
+    }
+
+    function computeResoniteSnapshotRetryAt({
+        attemptedAt,
+        failureCount,
+        baseDelaySeconds,
+        maxBackoffMs
+    }) {
+        const normalizedAttemptAt = Number(attemptedAt || Date.now());
+        const normalizedFailures = Math.max(1, Number(failureCount || 1));
+        const baseDelayMs =
+            Math.max(30, Number(baseDelaySeconds) || 300) * 1000;
+        const backoffMs = Math.min(
+            Number(maxBackoffMs || RESONITE_SNAPSHOT_MAX_BACKOFF_MS),
+            baseDelayMs * Math.pow(2, normalizedFailures - 1)
+        );
+
+        return normalizedAttemptAt + backoffMs;
+    }
+
+    async function shouldAttemptResoniteRealtimeRefresh(
+        scope,
+        now = Date.now()
+    ) {
+        const normalizedScope = String(scope || '').trim();
+        if (!normalizedScope) {
+            return true;
+        }
+
+        const existingState =
+            (await database.getResoniteSyncState(normalizedScope)) || {};
+        return Number(existingState.nextPresenceRetryAt || 0) <= Number(now);
+    }
+
+    async function recordResonitePresenceRefreshState({
+        scope,
+        phase,
+        lastAttemptAt,
+        lastSuccessfulPresenceAt,
+        lastErrorText = ''
+    }) {
+        await recordResoniteRefreshState({
+            scope,
+            phase,
+            lastAttemptAt,
+            lastSuccessfulAt: lastSuccessfulPresenceAt,
+            lastErrorText,
+            successField: 'lastSuccessfulPresenceAt',
+            failureCountField: 'presenceFailureCount',
+            nextRetryField: 'nextPresenceRetryAt',
+            failureFallbackError: 'realtime-connect-failed',
+            maxBackoffMs: RESONITE_PRESENCE_MAX_BACKOFF_MS
+        });
+    }
+
+    async function recordResoniteRefreshState({
+        scope,
+        phase = 'attempt',
+        lastAttemptAt = 0,
+        lastSuccessfulAt,
+        lastErrorText = '',
+        successField,
+        failureCountField,
+        nextRetryField,
+        failureFallbackError,
+        maxBackoffMs
+    }) {
+        const normalizedScope = String(scope || '').trim();
+        if (!normalizedScope) {
+            return;
+        }
+
+        const existingState =
+            (await database.getResoniteSyncState(normalizedScope)) || {};
+        const normalizedAttemptAt = Number(lastAttemptAt || Date.now());
+        const normalizedPhase = String(phase || 'attempt').trim();
+        let failureCount = Number(existingState[failureCountField] || 0);
+        let nextRetryAt = Number(existingState[nextRetryField] || 0);
+        let normalizedErrorText =
+            normalizedPhase === 'failure'
+                ? String(lastErrorText || failureFallbackError).trim()
+                : normalizedPhase === 'success'
+                  ? ''
+                  : String(existingState.lastErrorText || '').trim();
+
+        if (normalizedPhase === 'failure') {
+            failureCount += 1;
+            nextRetryAt = computeResoniteSnapshotRetryAt({
+                attemptedAt: normalizedAttemptAt,
+                failureCount,
+                baseDelaySeconds: advancedSettingsStore.resoniteRefreshSeconds,
+                maxBackoffMs
+            });
+        } else if (normalizedPhase === 'success') {
+            failureCount = 0;
+            nextRetryAt = 0;
+        }
+
+        await database.setResoniteSyncState({
+            scope: normalizedScope,
+            lastAttemptAt: normalizedAttemptAt,
+            [successField]: lastSuccessfulAt,
+            lastErrorText: normalizedErrorText,
+            activeResoniteUserId: parseResoniteUserIdFromApiKey(
+                advancedSettingsStore.resoniteApiKey
+            ),
+            [failureCountField]: failureCount,
+            [nextRetryField]: nextRetryAt
+        });
+    }
+
+    function buildResoniteCachedContactEntry(friendData, persistedAt) {
+        const sanitizedFriend = sanitizePersistedResoniteFriend(friendData);
+        if (!sanitizedFriend) {
+            return null;
+        }
+
+        const resonite = /** @type {any} */ (sanitizedFriend.resonite || {});
         return {
-            version: RESONITE_SNAPSHOT_CACHE_VERSION,
-            persistedAt: Date.now(),
-            friends: friendsSnapshot
+            externalId: sanitizedFriend.id,
+            resoniteUserId: firstNonEmptyString(
+                resonite.userId,
+                stripResonitePrefix(sanitizedFriend.id)
+            ),
+            displayName: firstNonEmptyString(
+                sanitizedFriend.name,
+                sanitizedFriend?.ref?.displayName
+            ),
+            username: String(resonite.username || '').trim(),
+            normalizedUsername: normalizeResoniteHandle(resonite.username),
+            contactStatus: String(
+                sanitizedFriend?.ref?.contactStatus || ''
+            ).trim(),
+            isAccepted: sanitizedFriend?.ref?.isAccepted,
+            latestMessageTime: String(
+                sanitizedFriend?.ref?.latestMessageTime || ''
+            ).trim(),
+            isSystemContact: isResoniteSystemContact(sanitizedFriend),
+            fetchedAt: persistedAt,
+            lastSuccessfulSnapshotAt: persistedAt,
+            sourceRevision: String(persistedAt),
+            payload: sanitizedFriend
         };
     }
 
@@ -2795,6 +3501,13 @@ export const useFriendStore = defineStore('Friend', () => {
                 statusDescription: String(
                     friendData?.ref?.statusDescription || ''
                 ).trim(),
+                contactStatus: String(
+                    friendData?.ref?.contactStatus || ''
+                ).trim(),
+                latestMessageTime: String(
+                    friendData?.ref?.latestMessageTime || ''
+                ).trim(),
+                isAccepted: friendData?.ref?.isAccepted,
                 profileImageUrl: String(
                     friendData?.ref?.profileImageUrl || ''
                 ).trim(),
@@ -2830,6 +3543,9 @@ export const useFriendStore = defineStore('Friend', () => {
                     compatibilityHash: String(
                         mergedResonite.compatibilityHash || ''
                     ).trim(),
+                    contactObservedAt: Number(
+                        mergedResonite.contactObservedAt || 0
+                    ),
                     isPresent: Boolean(mergedResonite.isPresent),
                     profile: {
                         iconUrl: String(
@@ -2927,6 +3643,9 @@ export const useFriendStore = defineStore('Friend', () => {
                 compatibilityHash: String(
                     mergedResonite.compatibilityHash || ''
                 ).trim(),
+                contactObservedAt: Number(
+                    mergedResonite.contactObservedAt || 0
+                ),
                 isPresent: Boolean(mergedResonite.isPresent),
                 profile: {
                     iconUrl: String(
@@ -3013,6 +3732,7 @@ export const useFriendStore = defineStore('Friend', () => {
         activeFriends,
         offlineFriends,
         friendsInSameInstance,
+        resoniteFriendsInSameSession,
 
         allFavoriteFriendIds,
         allFavoriteOnlineFriends,

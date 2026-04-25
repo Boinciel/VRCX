@@ -1,9 +1,11 @@
 import webApiService from './webapi';
+import { database } from './database';
 import { useAdvancedSettingsStore } from '../stores';
 import {
     buildResoniteAuthorizationHeader,
     ensureResoniteSessionIsFresh
 } from './resoniteAuth';
+import { upsertResoniteMergeTraceField } from './resoniteMerge';
 import { convertFileUrlToImageUrl } from '../shared/utils/common';
 
 const RESONITE_USER_PROFILE_CACHE_TTL_MS = 10 * 60 * 1000;
@@ -141,6 +143,7 @@ export function normalizeResoniteFriends(payload) {
     }
 
     const normalized = [];
+    const contactObservedAt = Date.now();
     let presenceSignalsCount = 0;
     let contactsLikeCount = 0;
 
@@ -152,7 +155,9 @@ export function normalizeResoniteFriends(payload) {
             if (isContactsLikeEntry(entry)) {
                 contactsLikeCount += 1;
             }
-            const normalizedEntry = normalizeResoniteFriend(entry);
+            const normalizedEntry = normalizeResoniteFriend(entry, {
+                contactObservedAt
+            });
             if (normalizedEntry) {
                 normalized.push(normalizedEntry);
             }
@@ -178,7 +183,7 @@ export function normalizeResoniteFriends(payload) {
  * @param {Object} entry
  * @returns {Object|null}
  */
-export function normalizeResoniteFriend(entry) {
+export function normalizeResoniteFriend(entry, options = {}) {
     if (!entry || typeof entry !== 'object') {
         console.warn('[ResoniteIntegration] Entry is not an object:', entry);
         return null;
@@ -250,19 +255,22 @@ export function normalizeResoniteFriend(entry) {
         profile?.name
     );
 
-    const status =
-        normalizeStatus(
-            firstDefined(
-                entry.status,
-                entry.onlineStatus,
-                entry.userStatus?.onlineStatus,
-                entry.entity?.status,
-                entry.entity?.onlineStatus,
-                payload?.status,
-                payload?.onlineStatus,
-                userStatus?.onlineStatus
-            )
-        ) || 'offline';
+    const explicitPresenceSignals = hasPresenceSignals(entry);
+    const normalizedStatus = normalizeStatus(
+        firstDefined(
+            entry.status,
+            entry.onlineStatus,
+            entry.userStatus?.onlineStatus,
+            entry.entity?.status,
+            entry.entity?.onlineStatus,
+            payload?.status,
+            payload?.onlineStatus,
+            userStatus?.onlineStatus
+        )
+    );
+    const status = explicitPresenceSignals
+        ? normalizedStatus || 'offline'
+        : normalizedStatus;
 
     const statusDescription =
         firstNonEmptyString(
@@ -453,9 +461,11 @@ export function normalizeResoniteFriend(entry) {
         ownerId,
         username,
         normalizedUsername,
+        contactObservedAt: Number(options?.contactObservedAt || 0),
         registrationDate,
         isVerified,
         tags,
+        hasPresenceSignals: explicitPresenceSignals,
         contactStatus,
         latestMessageTime,
         isAccepted,
@@ -650,6 +660,11 @@ export async function fetchResoniteUserProfiles(userIds, options) {
     const profilesByUserId = new Map();
     const uncachedUserIds = [];
 
+    const cachedDatabaseProfiles = force
+        ? []
+        : await database.getResoniteCachedProfiles(uniqueUserIds);
+    hydrateResoniteUserProfileMemoryCache(cachedDatabaseProfiles, baseUrl);
+
     for (const userId of uniqueUserIds) {
         const cachedEntry = getResoniteUserProfileCacheEntry(userId, baseUrl);
         if (
@@ -724,6 +739,7 @@ async function fetchResoniteUserProfile(userId, options) {
         }
 
         const payload = JSON.parse(response.data);
+        await persistResoniteUserProfileCacheEntry(normalizedUserId, payload);
         resoniteUserProfileCache.set(cacheKey, {
             fetchedAt: Date.now(),
             value: payload
@@ -742,6 +758,95 @@ function getResoniteUserProfileCacheEntry(userId, apiBaseUrl) {
     return resoniteUserProfileCache.get(
         buildResoniteUserProfileCacheKey(userId, apiBaseUrl)
     );
+}
+
+function hydrateResoniteUserProfileMemoryCache(entries, apiBaseUrl) {
+    const baseUrl = getResoniteApiBaseUrl(apiBaseUrl);
+    const now = Date.now();
+
+    for (const entry of Array.isArray(entries) ? entries : []) {
+        const userId = String(entry?.resoniteUserId || '').trim();
+        const expiresAt = Number(entry?.expiresAt || 0);
+        if (!userId || (expiresAt > 0 && expiresAt <= now)) {
+            continue;
+        }
+
+        const payload =
+            entry?.payload && typeof entry.payload === 'object'
+                ? entry.payload
+                : buildResoniteUserProfilePayloadFromCacheEntry(entry);
+        if (!payload || typeof payload !== 'object') {
+            continue;
+        }
+
+        resoniteUserProfileCache.set(
+            buildResoniteUserProfileCacheKey(userId, baseUrl),
+            {
+                fetchedAt: Number(entry?.fetchedAt || now),
+                value: payload
+            }
+        );
+    }
+}
+
+async function persistResoniteUserProfileCacheEntry(userId, payload) {
+    const normalizedUserId = String(userId || '').trim();
+    if (!normalizedUserId || !payload || typeof payload !== 'object') {
+        return;
+    }
+
+    const fetchedAt = Date.now();
+    await database.upsertResoniteCachedProfile({
+        resoniteUserId: normalizedUserId,
+        displayName: firstNonEmptyString(
+            payload.displayName,
+            payload.name,
+            payload.profile?.displayName,
+            payload.profile?.name
+        ),
+        username: firstNonEmptyString(
+            payload.username,
+            payload.contactUsername
+        ),
+        registrationDate: firstNonEmptyString(
+            payload.registrationDate,
+            payload.created,
+            payload.createdAt
+        ),
+        isVerified: firstBoolean(payload.isVerified),
+        tags: firstStringArray(payload.tags),
+        iconUrl: convertFileUrlToImageUrl(
+            firstNonEmptyString(
+                payload.profile?.iconUrl,
+                payload.profile?.profileImageUrl,
+                payload.profile?.imageUrl
+            )
+        ),
+        tagline: firstNonEmptyString(payload.profile?.tagline),
+        description: firstNonEmptyString(payload.profile?.description),
+        fetchedAt,
+        expiresAt: fetchedAt + RESONITE_USER_PROFILE_CACHE_TTL_MS,
+        payload
+    });
+}
+
+function buildResoniteUserProfilePayloadFromCacheEntry(entry) {
+    const profile = {
+        iconUrl: String(entry?.iconUrl || '').trim(),
+        tagline: String(entry?.tagline || '').trim(),
+        description: String(entry?.description || '').trim()
+    };
+
+    return {
+        id: String(entry?.resoniteUserId || '').trim(),
+        displayName: String(entry?.displayName || '').trim(),
+        username: String(entry?.username || '').trim(),
+        registrationDate: String(entry?.registrationDate || '').trim(),
+        isVerified:
+            entry?.isVerified === undefined ? false : Boolean(entry.isVerified),
+        tags: firstStringArray(entry?.tags),
+        profile
+    };
 }
 
 function buildResoniteUserProfileCacheKey(userId, apiBaseUrl) {
@@ -765,6 +870,128 @@ export function mergeResoniteUserProfile(friend, userPayload) {
     }
 
     const profile = firstObject(userPayload.profile);
+    let mergeTrace = {
+        ...(friend?.resonite?.mergeTrace || {}),
+        ...(friend?.ref?.resonite?.mergeTrace || {})
+    };
+
+    function recordProfileMergeTrace(
+        field,
+        winner,
+        reason,
+        existingValue,
+        incomingValue,
+        selectedValue
+    ) {
+        mergeTrace = upsertResoniteMergeTraceField(
+            mergeTrace,
+            'profile',
+            field,
+            {
+                winner,
+                reason,
+                existingValue,
+                incomingValue,
+                selectedValue
+            }
+        );
+    }
+
+    function selectProfileStringField(field, incomingValue, ...fallbackValues) {
+        const normalizedIncoming = extractMeaningfulString(incomingValue);
+        const normalizedFallback = firstNonEmptyString(...fallbackValues);
+
+        if (normalizedIncoming) {
+            recordProfileMergeTrace(
+                field,
+                'incoming',
+                'fetched-profile-authoritative',
+                normalizedFallback,
+                normalizedIncoming,
+                normalizedIncoming
+            );
+            return normalizedIncoming;
+        }
+
+        recordProfileMergeTrace(
+            field,
+            'existing',
+            normalizedFallback ? 'fetched-profile-missing' : 'no-profile-value',
+            normalizedFallback,
+            normalizedIncoming,
+            normalizedFallback
+        );
+        return normalizedFallback;
+    }
+
+    function selectProfileBooleanField(
+        field,
+        incomingValue,
+        ...fallbackValues
+    ) {
+        const hasIncoming = typeof incomingValue === 'boolean';
+        const fallbackValue = fallbackValues.find(
+            (value) => typeof value === 'boolean'
+        );
+
+        if (hasIncoming) {
+            recordProfileMergeTrace(
+                field,
+                'incoming',
+                'fetched-profile-authoritative',
+                fallbackValue,
+                incomingValue,
+                incomingValue
+            );
+            return incomingValue;
+        }
+
+        recordProfileMergeTrace(
+            field,
+            'existing',
+            fallbackValue === undefined
+                ? 'no-profile-value'
+                : 'fetched-profile-missing',
+            fallbackValue,
+            incomingValue,
+            fallbackValue === undefined ? false : fallbackValue
+        );
+        return fallbackValue === undefined ? false : fallbackValue;
+    }
+
+    function selectProfileStringArrayField(
+        field,
+        incomingValue,
+        ...fallbackValues
+    ) {
+        const incomingArray = firstStringArray(incomingValue);
+        const fallbackArray = firstStringArray(...fallbackValues);
+
+        if (incomingArray.length > 0) {
+            recordProfileMergeTrace(
+                field,
+                'incoming',
+                'fetched-profile-authoritative',
+                fallbackArray,
+                incomingArray,
+                incomingArray
+            );
+            return incomingArray;
+        }
+
+        recordProfileMergeTrace(
+            field,
+            'existing',
+            fallbackArray.length > 0
+                ? 'fetched-profile-missing'
+                : 'no-profile-value',
+            fallbackArray,
+            incomingArray,
+            fallbackArray
+        );
+        return fallbackArray;
+    }
+
     const profileIconUrl = convertFileUrlToImageUrl(
         firstNonEmptyString(
             profile?.iconUrl,
@@ -773,19 +1000,22 @@ export function mergeResoniteUserProfile(friend, userPayload) {
         )
     );
     const avatarUrl =
-        firstNonEmptyString(
+        selectProfileStringField(
+            'profile.iconUrl',
             profileIconUrl,
             friend?.ref?.profileImageUrl,
             friend?.ref?.userIcon,
             friend?.resonite?.profile?.iconUrl
         ) || '';
     const profileTagline =
-        firstNonEmptyString(
+        selectProfileStringField(
+            'profile.tagline',
             profile?.tagline,
             friend?.resonite?.profile?.tagline
         ) || '';
     const profileDescription =
-        firstNonEmptyString(
+        selectProfileStringField(
+            'profile.description',
             profile?.description,
             friend?.resonite?.profile?.description
         ) || '';
@@ -795,28 +1025,43 @@ export function mergeResoniteUserProfile(friend, userPayload) {
             profileTagline,
             profileDescription
         ) || '';
-    const tags = firstStringArray(userPayload.tags, friend?.resonite?.tags);
+    const tags = selectProfileStringArrayField(
+        'tags',
+        userPayload.tags,
+        friend?.resonite?.tags
+    );
+
+    const username = selectProfileStringField(
+        'username',
+        userPayload.username,
+        friend?.resonite?.username,
+        friend?.ref?.displayName
+    );
+    const normalizedUsername = selectProfileStringField(
+        'normalizedUsername',
+        userPayload.normalizedUsername,
+        extractMeaningfulString(userPayload.username).toLowerCase(),
+        friend?.resonite?.normalizedUsername
+    );
+    const registrationDate = selectProfileStringField(
+        'registrationDate',
+        userPayload.registrationDate,
+        friend?.resonite?.registrationDate
+    );
+    const isVerified = selectProfileBooleanField(
+        'isVerified',
+        userPayload.isVerified,
+        friend?.resonite?.isVerified
+    );
 
     const resonite = {
         ...(friend?.resonite || {}),
-        username: firstNonEmptyString(
-            friend?.resonite?.username,
-            userPayload.username,
-            friend?.ref?.displayName
-        ),
-        normalizedUsername: firstNonEmptyString(
-            friend?.resonite?.normalizedUsername,
-            userPayload.normalizedUsername
-        ),
-        registrationDate: firstNonEmptyString(
-            friend?.resonite?.registrationDate,
-            userPayload.registrationDate
-        ),
-        isVerified: firstBoolean(
-            userPayload.isVerified,
-            friend?.resonite?.isVerified
-        ),
+        username,
+        normalizedUsername,
+        registrationDate,
+        isVerified,
         tags,
+        mergeTrace,
         profile: {
             ...(friend?.resonite?.profile || {}),
             iconUrl: avatarUrl,
@@ -983,7 +1228,7 @@ function mapResoniteStatusToVrcxStatus(status, isOnline) {
         return 'active';
     }
 
-    return 'busy';
+    return '';
 }
 function firstNonEmptyString(...values) {
     for (const value of values) {

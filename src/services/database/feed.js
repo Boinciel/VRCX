@@ -2,14 +2,55 @@ import { dbVars } from '../database';
 
 import sqliteService from '../sqlite.js';
 
+function buildProviderFilter(provider) {
+    const normalizedProvider = String(provider || '')
+        .trim()
+        .toLowerCase();
+
+    if (!normalizedProvider) {
+        return {
+            providerQuery: '',
+            providerArgs: {}
+        };
+    }
+
+    if (normalizedProvider === 'resonite') {
+        return {
+            providerQuery:
+                "AND (provider = @provider OR (provider = '' AND (user_id LIKE 'resonite:%' OR user_id LIKE 'U-%' OR user_id LIKE 'u-%')))",
+            providerArgs: {
+                '@provider': normalizedProvider
+            }
+        };
+    }
+
+    if (normalizedProvider === 'vrchat') {
+        return {
+            providerQuery:
+                "AND (provider = @provider OR (provider = '' AND user_id NOT LIKE 'resonite:%' AND user_id NOT LIKE 'U-%' AND user_id NOT LIKE 'u-%'))",
+            providerArgs: {
+                '@provider': normalizedProvider
+            }
+        };
+    }
+
+    return {
+        providerQuery: 'AND provider = @provider',
+        providerArgs: {
+            '@provider': normalizedProvider
+        }
+    };
+}
+
 const feed = {
     addGPSToDatabase(entry) {
         sqliteService.executeNonQuery(
-            `INSERT OR IGNORE INTO ${dbVars.userPrefix}_feed_gps (created_at, user_id, display_name, location, world_name, previous_location, time, group_name) VALUES (@created_at, @user_id, @display_name, @location, @world_name, @previous_location, @time, @group_name)`,
+            `INSERT OR IGNORE INTO ${dbVars.userPrefix}_feed_gps (created_at, user_id, display_name, provider, location, world_name, previous_location, time, group_name) VALUES (@created_at, @user_id, @display_name, @provider, @location, @world_name, @previous_location, @time, @group_name)`,
             {
                 '@created_at': entry.created_at,
                 '@user_id': entry.userId,
                 '@display_name': entry.displayName,
+                '@provider': entry.provider || '',
                 '@location': entry.location,
                 '@world_name': entry.worldName,
                 '@previous_location': entry.previousLocation,
@@ -21,11 +62,12 @@ const feed = {
 
     addStatusToDatabase(entry) {
         sqliteService.executeNonQuery(
-            `INSERT OR IGNORE INTO ${dbVars.userPrefix}_feed_status (created_at, user_id, display_name, status, status_description, previous_status, previous_status_description) VALUES (@created_at, @user_id, @display_name, @status, @status_description, @previous_status, @previous_status_description)`,
+            `INSERT OR IGNORE INTO ${dbVars.userPrefix}_feed_status (created_at, user_id, display_name, provider, status, status_description, previous_status, previous_status_description) VALUES (@created_at, @user_id, @display_name, @provider, @status, @status_description, @previous_status, @previous_status_description)`,
             {
                 '@created_at': entry.created_at,
                 '@user_id': entry.userId,
                 '@display_name': entry.displayName,
+                '@provider': entry.provider || '',
                 '@status': entry.status,
                 '@status_description': entry.statusDescription,
                 '@previous_status': entry.previousStatus,
@@ -36,11 +78,12 @@ const feed = {
 
     addBioToDatabase(entry) {
         sqliteService.executeNonQuery(
-            `INSERT OR IGNORE INTO ${dbVars.userPrefix}_feed_bio (created_at, user_id, display_name, bio, previous_bio) VALUES (@created_at, @user_id, @display_name, @bio, @previous_bio)`,
+            `INSERT OR IGNORE INTO ${dbVars.userPrefix}_feed_bio (created_at, user_id, display_name, provider, bio, previous_bio) VALUES (@created_at, @user_id, @display_name, @provider, @bio, @previous_bio)`,
             {
                 '@created_at': entry.created_at,
                 '@user_id': entry.userId,
                 '@display_name': entry.displayName,
+                '@provider': entry.provider || '',
                 '@bio': entry.bio,
                 '@previous_bio': entry.previousBio
             }
@@ -49,11 +92,12 @@ const feed = {
 
     addAvatarToDatabase(entry) {
         sqliteService.executeNonQuery(
-            `INSERT OR IGNORE INTO ${dbVars.userPrefix}_feed_avatar (created_at, user_id, display_name, owner_id, avatar_name, current_avatar_image_url, current_avatar_thumbnail_image_url, previous_current_avatar_image_url, previous_current_avatar_thumbnail_image_url) VALUES (@created_at, @user_id, @display_name, @owner_id, @avatar_name, @current_avatar_image_url, @current_avatar_thumbnail_image_url, @previous_current_avatar_image_url, @previous_current_avatar_thumbnail_image_url)`,
+            `INSERT OR IGNORE INTO ${dbVars.userPrefix}_feed_avatar (created_at, user_id, display_name, provider, owner_id, avatar_name, current_avatar_image_url, current_avatar_thumbnail_image_url, previous_current_avatar_image_url, previous_current_avatar_thumbnail_image_url) VALUES (@created_at, @user_id, @display_name, @provider, @owner_id, @avatar_name, @current_avatar_image_url, @current_avatar_thumbnail_image_url, @previous_current_avatar_image_url, @previous_current_avatar_thumbnail_image_url)`,
             {
                 '@created_at': entry.created_at,
                 '@user_id': entry.userId,
                 '@display_name': entry.displayName,
+                '@provider': entry.provider || '',
                 '@owner_id': entry.ownerId,
                 '@avatar_name': entry.avatarName,
                 '@current_avatar_image_url': entry.currentAvatarImageUrl,
@@ -89,11 +133,12 @@ const feed = {
 
     addOnlineOfflineToDatabase(entry) {
         sqliteService.executeNonQuery(
-            `INSERT OR IGNORE INTO ${dbVars.userPrefix}_feed_online_offline (created_at, user_id, display_name, type, location, world_name, time, group_name) VALUES (@created_at, @user_id, @display_name, @type, @location, @world_name, @time, @group_name)`,
+            `INSERT OR IGNORE INTO ${dbVars.userPrefix}_feed_online_offline (created_at, user_id, display_name, provider, type, location, world_name, time, group_name) VALUES (@created_at, @user_id, @display_name, @provider, @type, @location, @world_name, @time, @group_name)`,
             {
                 '@created_at': entry.created_at,
                 '@user_id': entry.userId,
                 '@display_name': entry.displayName,
+                '@provider': entry.provider || '',
                 '@type': entry.type,
                 '@location': entry.location,
                 '@world_name': entry.worldName,
@@ -109,10 +154,11 @@ const feed = {
         vipList,
         maxEntries = dbVars.searchTableSize,
         dateFrom = '',
-        dateTo = ''
+        dateTo = '',
+        provider = ''
     ) {
         if (search.startsWith('wrld_') || search.startsWith('grp_')) {
-            return this.getFeedByInstanceId(search, filters, vipList);
+            return this.getFeedByInstanceId(search, filters, vipList, provider);
         }
         let vipQuery = '';
         const vipArgs = {};
@@ -132,6 +178,7 @@ const feed = {
         if (dateTo) {
             dateQuery += 'AND created_at <= @dateTo ';
         }
+        const { providerQuery, providerArgs } = buildProviderFilter(provider);
         let gps = true;
         let status = true;
         let bio = true;
@@ -177,6 +224,7 @@ const feed = {
             'created_at',
             'user_id',
             'display_name',
+            'provider',
             'type',
             'location',
             'world_name',
@@ -198,17 +246,17 @@ const feed = {
         ].join(', ');
         if (gps) {
             selects.push(
-                `SELECT * FROM (SELECT id, created_at, user_id, display_name, 'GPS' AS type, location, world_name, previous_location, time, group_name, NULL AS status, NULL AS status_description, NULL AS previous_status, NULL AS previous_status_description, NULL AS bio, NULL AS previous_bio, NULL AS owner_id, NULL AS avatar_name, NULL AS current_avatar_image_url, NULL AS current_avatar_thumbnail_image_url, NULL AS previous_current_avatar_image_url, NULL AS previous_current_avatar_thumbnail_image_url FROM ${dbVars.userPrefix}_feed_gps WHERE (display_name LIKE @searchLike OR world_name LIKE @searchLike OR group_name LIKE @searchLike) ${dateQuery} ${vipQuery} ORDER BY created_at DESC, id DESC LIMIT @perTable)`
+                `SELECT * FROM (SELECT id, created_at, user_id, display_name, provider, 'GPS' AS type, location, world_name, previous_location, time, group_name, NULL AS status, NULL AS status_description, NULL AS previous_status, NULL AS previous_status_description, NULL AS bio, NULL AS previous_bio, NULL AS owner_id, NULL AS avatar_name, NULL AS current_avatar_image_url, NULL AS current_avatar_thumbnail_image_url, NULL AS previous_current_avatar_image_url, NULL AS previous_current_avatar_thumbnail_image_url FROM ${dbVars.userPrefix}_feed_gps WHERE (display_name LIKE @searchLike OR world_name LIKE @searchLike OR group_name LIKE @searchLike) ${providerQuery} ${dateQuery} ${vipQuery} ORDER BY created_at DESC, id DESC LIMIT @perTable)`
             );
         }
         if (status) {
             selects.push(
-                `SELECT * FROM (SELECT id, created_at, user_id, display_name, 'Status' AS type, NULL AS location, NULL AS world_name, NULL AS previous_location, NULL AS time, NULL AS group_name, status, status_description, previous_status, previous_status_description, NULL AS bio, NULL AS previous_bio, NULL AS owner_id, NULL AS avatar_name, NULL AS current_avatar_image_url, NULL AS current_avatar_thumbnail_image_url, NULL AS previous_current_avatar_image_url, NULL AS previous_current_avatar_thumbnail_image_url FROM ${dbVars.userPrefix}_feed_status WHERE (display_name LIKE @searchLike OR status LIKE @searchLike OR status_description LIKE @searchLike) ${dateQuery} ${vipQuery} ORDER BY created_at DESC, id DESC LIMIT @perTable)`
+                `SELECT * FROM (SELECT id, created_at, user_id, display_name, provider, 'Status' AS type, NULL AS location, NULL AS world_name, NULL AS previous_location, NULL AS time, NULL AS group_name, status, status_description, previous_status, previous_status_description, NULL AS bio, NULL AS previous_bio, NULL AS owner_id, NULL AS avatar_name, NULL AS current_avatar_image_url, NULL AS current_avatar_thumbnail_image_url, NULL AS previous_current_avatar_image_url, NULL AS previous_current_avatar_thumbnail_image_url FROM ${dbVars.userPrefix}_feed_status WHERE (display_name LIKE @searchLike OR status LIKE @searchLike OR status_description LIKE @searchLike) ${providerQuery} ${dateQuery} ${vipQuery} ORDER BY created_at DESC, id DESC LIMIT @perTable)`
             );
         }
         if (bio) {
             selects.push(
-                `SELECT * FROM (SELECT id, created_at, user_id, display_name, 'Bio' AS type, NULL AS location, NULL AS world_name, NULL AS previous_location, NULL AS time, NULL AS group_name, NULL AS status, NULL AS status_description, NULL AS previous_status, NULL AS previous_status_description, bio, previous_bio, NULL AS owner_id, NULL AS avatar_name, NULL AS current_avatar_image_url, NULL AS current_avatar_thumbnail_image_url, NULL AS previous_current_avatar_image_url, NULL AS previous_current_avatar_thumbnail_image_url FROM ${dbVars.userPrefix}_feed_bio WHERE (display_name LIKE @searchLike OR bio LIKE @searchLike) ${dateQuery} ${vipQuery} ORDER BY created_at DESC, id DESC LIMIT @perTable)`
+                `SELECT * FROM (SELECT id, created_at, user_id, display_name, provider, 'Bio' AS type, NULL AS location, NULL AS world_name, NULL AS previous_location, NULL AS time, NULL AS group_name, NULL AS status, NULL AS status_description, NULL AS previous_status, NULL AS previous_status_description, bio, previous_bio, NULL AS owner_id, NULL AS avatar_name, NULL AS current_avatar_image_url, NULL AS current_avatar_thumbnail_image_url, NULL AS previous_current_avatar_image_url, NULL AS previous_current_avatar_thumbnail_image_url FROM ${dbVars.userPrefix}_feed_bio WHERE (display_name LIKE @searchLike OR bio LIKE @searchLike) ${providerQuery} ${dateQuery} ${vipQuery} ORDER BY created_at DESC, id DESC LIMIT @perTable)`
             );
         }
         if (avatar) {
@@ -219,7 +267,7 @@ const feed = {
                 avatarQuery = 'OR user_id != owner_id';
             }
             selects.push(
-                `SELECT * FROM (SELECT id, created_at, user_id, display_name, 'Avatar' AS type, NULL AS location, NULL AS world_name, NULL AS previous_location, NULL AS time, NULL AS group_name, NULL AS status, NULL AS status_description, NULL AS previous_status, NULL AS previous_status_description, NULL AS bio, NULL AS previous_bio, owner_id, avatar_name, current_avatar_image_url, current_avatar_thumbnail_image_url, previous_current_avatar_image_url, previous_current_avatar_thumbnail_image_url FROM ${dbVars.userPrefix}_feed_avatar WHERE (display_name LIKE @searchLike OR avatar_name LIKE @searchLike) ${avatarQuery} ${dateQuery} ${vipQuery} ORDER BY created_at DESC, id DESC LIMIT @perTable)`
+                `SELECT * FROM (SELECT id, created_at, user_id, display_name, provider, 'Avatar' AS type, NULL AS location, NULL AS world_name, NULL AS previous_location, NULL AS time, NULL AS group_name, NULL AS status, NULL AS status_description, NULL AS previous_status, NULL AS previous_status_description, NULL AS bio, NULL AS previous_bio, owner_id, avatar_name, current_avatar_image_url, current_avatar_thumbnail_image_url, previous_current_avatar_image_url, previous_current_avatar_thumbnail_image_url FROM ${dbVars.userPrefix}_feed_avatar WHERE (display_name LIKE @searchLike OR avatar_name LIKE @searchLike) ${avatarQuery} ${providerQuery} ${dateQuery} ${vipQuery} ORDER BY created_at DESC, id DESC LIMIT @perTable)`
             );
         }
         if (online || offline) {
@@ -232,7 +280,7 @@ const feed = {
                 }
             }
             selects.push(
-                `SELECT * FROM (SELECT id, created_at, user_id, display_name, type, location, world_name, NULL AS previous_location, time, group_name, NULL AS status, NULL AS status_description, NULL AS previous_status, NULL AS previous_status_description, NULL AS bio, NULL AS previous_bio, NULL AS owner_id, NULL AS avatar_name, NULL AS current_avatar_image_url, NULL AS current_avatar_thumbnail_image_url, NULL AS previous_current_avatar_image_url, NULL AS previous_current_avatar_thumbnail_image_url FROM ${dbVars.userPrefix}_feed_online_offline WHERE (display_name LIKE @searchLike OR world_name LIKE @searchLike OR group_name LIKE @searchLike) ${query} ${dateQuery} ${vipQuery} ORDER BY created_at DESC, id DESC LIMIT @perTable)`
+                `SELECT * FROM (SELECT id, created_at, user_id, display_name, provider, type, location, world_name, NULL AS previous_location, time, group_name, NULL AS status, NULL AS status_description, NULL AS previous_status, NULL AS previous_status_description, NULL AS bio, NULL AS previous_bio, NULL AS owner_id, NULL AS avatar_name, NULL AS current_avatar_image_url, NULL AS current_avatar_thumbnail_image_url, NULL AS previous_current_avatar_image_url, NULL AS previous_current_avatar_thumbnail_image_url FROM ${dbVars.userPrefix}_feed_online_offline WHERE (display_name LIKE @searchLike OR world_name LIKE @searchLike OR group_name LIKE @searchLike) ${query} ${providerQuery} ${dateQuery} ${vipQuery} ORDER BY created_at DESC, id DESC LIMIT @perTable)`
             );
         }
         if (selects.length === 0) {
@@ -243,6 +291,7 @@ const feed = {
             '@searchLike': searchLike,
             '@limit': maxEntries,
             '@perTable': maxEntries,
+            ...providerArgs,
             ...vipArgs
         };
         if (dateFrom) {
@@ -253,46 +302,47 @@ const feed = {
         }
         await sqliteService.execute(
             (dbRow) => {
-                const type = dbRow[4];
+                const type = dbRow[5];
                 const row = {
                     rowId: dbRow[0],
                     created_at: dbRow[1],
                     userId: dbRow[2],
                     displayName: dbRow[3],
+                    provider: dbRow[4],
                     type
                 };
                 switch (type) {
                     case 'GPS':
-                        row.location = dbRow[5];
-                        row.worldName = dbRow[6];
-                        row.previousLocation = dbRow[7];
-                        row.time = dbRow[8];
-                        row.groupName = dbRow[9];
+                        row.location = dbRow[6];
+                        row.worldName = dbRow[7];
+                        row.previousLocation = dbRow[8];
+                        row.time = dbRow[9];
+                        row.groupName = dbRow[10];
                         break;
                     case 'Status':
-                        row.status = dbRow[10];
-                        row.statusDescription = dbRow[11];
-                        row.previousStatus = dbRow[12];
-                        row.previousStatusDescription = dbRow[13];
+                        row.status = dbRow[11];
+                        row.statusDescription = dbRow[12];
+                        row.previousStatus = dbRow[13];
+                        row.previousStatusDescription = dbRow[14];
                         break;
                     case 'Bio':
-                        row.bio = dbRow[14];
-                        row.previousBio = dbRow[15];
+                        row.bio = dbRow[15];
+                        row.previousBio = dbRow[16];
                         break;
                     case 'Avatar':
-                        row.ownerId = dbRow[16];
-                        row.avatarName = dbRow[17];
-                        row.currentAvatarImageUrl = dbRow[18];
-                        row.currentAvatarThumbnailImageUrl = dbRow[19];
-                        row.previousCurrentAvatarImageUrl = dbRow[20];
-                        row.previousCurrentAvatarThumbnailImageUrl = dbRow[21];
+                        row.ownerId = dbRow[17];
+                        row.avatarName = dbRow[18];
+                        row.currentAvatarImageUrl = dbRow[19];
+                        row.currentAvatarThumbnailImageUrl = dbRow[20];
+                        row.previousCurrentAvatarImageUrl = dbRow[21];
+                        row.previousCurrentAvatarThumbnailImageUrl = dbRow[22];
                         break;
                     case 'Online':
                     case 'Offline':
-                        row.location = dbRow[5];
-                        row.worldName = dbRow[6];
-                        row.time = dbRow[8];
-                        row.groupName = dbRow[9];
+                        row.location = dbRow[6];
+                        row.worldName = dbRow[7];
+                        row.time = dbRow[9];
+                        row.groupName = dbRow[10];
                         break;
                 }
                 feedDatabase.push(row);
@@ -306,7 +356,8 @@ const feed = {
     async lookupFeedDatabase(
         filters,
         vipList,
-        maxEntries = dbVars.maxTableSize
+        maxEntries = dbVars.maxTableSize,
+        provider = ''
     ) {
         let vipQuery = '';
         const vipArgs = {};
@@ -319,6 +370,7 @@ const feed = {
             });
             vipQuery = `AND user_id IN (${vipPlaceholders.join(', ')})`;
         }
+        const { providerQuery, providerArgs } = buildProviderFilter(provider);
         let gps = true;
         let status = true;
         let bio = true;
@@ -361,6 +413,7 @@ const feed = {
             'created_at',
             'user_id',
             'display_name',
+            'provider',
             'type',
             'location',
             'world_name',
@@ -382,22 +435,22 @@ const feed = {
         ].join(', ');
         if (gps) {
             selects.push(
-                `SELECT * FROM (SELECT id, created_at, user_id, display_name, 'GPS' AS type, location, world_name, previous_location, time, group_name, NULL AS status, NULL AS status_description, NULL AS previous_status, NULL AS previous_status_description, NULL AS bio, NULL AS previous_bio, NULL AS owner_id, NULL AS avatar_name, NULL AS current_avatar_image_url, NULL AS current_avatar_thumbnail_image_url, NULL AS previous_current_avatar_image_url, NULL AS previous_current_avatar_thumbnail_image_url FROM ${dbVars.userPrefix}_feed_gps WHERE 1=1 ${vipQuery} ORDER BY id DESC LIMIT @perTable)`
+                `SELECT * FROM (SELECT id, created_at, user_id, display_name, provider, 'GPS' AS type, location, world_name, previous_location, time, group_name, NULL AS status, NULL AS status_description, NULL AS previous_status, NULL AS previous_status_description, NULL AS bio, NULL AS previous_bio, NULL AS owner_id, NULL AS avatar_name, NULL AS current_avatar_image_url, NULL AS current_avatar_thumbnail_image_url, NULL AS previous_current_avatar_image_url, NULL AS previous_current_avatar_thumbnail_image_url FROM ${dbVars.userPrefix}_feed_gps WHERE 1=1 ${providerQuery} ${vipQuery} ORDER BY id DESC LIMIT @perTable)`
             );
         }
         if (status) {
             selects.push(
-                `SELECT * FROM (SELECT id, created_at, user_id, display_name, 'Status' AS type, NULL AS location, NULL AS world_name, NULL AS previous_location, NULL AS time, NULL AS group_name, status, status_description, previous_status, previous_status_description, NULL AS bio, NULL AS previous_bio, NULL AS owner_id, NULL AS avatar_name, NULL AS current_avatar_image_url, NULL AS current_avatar_thumbnail_image_url, NULL AS previous_current_avatar_image_url, NULL AS previous_current_avatar_thumbnail_image_url FROM ${dbVars.userPrefix}_feed_status WHERE 1=1 ${vipQuery} ORDER BY id DESC LIMIT @perTable)`
+                `SELECT * FROM (SELECT id, created_at, user_id, display_name, provider, 'Status' AS type, NULL AS location, NULL AS world_name, NULL AS previous_location, NULL AS time, NULL AS group_name, status, status_description, previous_status, previous_status_description, NULL AS bio, NULL AS previous_bio, NULL AS owner_id, NULL AS avatar_name, NULL AS current_avatar_image_url, NULL AS current_avatar_thumbnail_image_url, NULL AS previous_current_avatar_image_url, NULL AS previous_current_avatar_thumbnail_image_url FROM ${dbVars.userPrefix}_feed_status WHERE 1=1 ${providerQuery} ${vipQuery} ORDER BY id DESC LIMIT @perTable)`
             );
         }
         if (bio) {
             selects.push(
-                `SELECT * FROM (SELECT id, created_at, user_id, display_name, 'Bio' AS type, NULL AS location, NULL AS world_name, NULL AS previous_location, NULL AS time, NULL AS group_name, NULL AS status, NULL AS status_description, NULL AS previous_status, NULL AS previous_status_description, bio, previous_bio, NULL AS owner_id, NULL AS avatar_name, NULL AS current_avatar_image_url, NULL AS current_avatar_thumbnail_image_url, NULL AS previous_current_avatar_image_url, NULL AS previous_current_avatar_thumbnail_image_url FROM ${dbVars.userPrefix}_feed_bio WHERE 1=1 ${vipQuery} ORDER BY id DESC LIMIT @perTable)`
+                `SELECT * FROM (SELECT id, created_at, user_id, display_name, provider, 'Bio' AS type, NULL AS location, NULL AS world_name, NULL AS previous_location, NULL AS time, NULL AS group_name, NULL AS status, NULL AS status_description, NULL AS previous_status, NULL AS previous_status_description, bio, previous_bio, NULL AS owner_id, NULL AS avatar_name, NULL AS current_avatar_image_url, NULL AS current_avatar_thumbnail_image_url, NULL AS previous_current_avatar_image_url, NULL AS previous_current_avatar_thumbnail_image_url FROM ${dbVars.userPrefix}_feed_bio WHERE 1=1 ${providerQuery} ${vipQuery} ORDER BY id DESC LIMIT @perTable)`
             );
         }
         if (avatar) {
             selects.push(
-                `SELECT * FROM (SELECT id, created_at, user_id, display_name, 'Avatar' AS type, NULL AS location, NULL AS world_name, NULL AS previous_location, NULL AS time, NULL AS group_name, NULL AS status, NULL AS status_description, NULL AS previous_status, NULL AS previous_status_description, NULL AS bio, NULL AS previous_bio, owner_id, avatar_name, current_avatar_image_url, current_avatar_thumbnail_image_url, previous_current_avatar_image_url, previous_current_avatar_thumbnail_image_url FROM ${dbVars.userPrefix}_feed_avatar WHERE 1=1 ${vipQuery} ORDER BY id DESC LIMIT @perTable)`
+                `SELECT * FROM (SELECT id, created_at, user_id, display_name, provider, 'Avatar' AS type, NULL AS location, NULL AS world_name, NULL AS previous_location, NULL AS time, NULL AS group_name, NULL AS status, NULL AS status_description, NULL AS previous_status, NULL AS previous_status_description, NULL AS bio, NULL AS previous_bio, owner_id, avatar_name, current_avatar_image_url, current_avatar_thumbnail_image_url, previous_current_avatar_image_url, previous_current_avatar_thumbnail_image_url FROM ${dbVars.userPrefix}_feed_avatar WHERE 1=1 ${providerQuery} ${vipQuery} ORDER BY id DESC LIMIT @perTable)`
             );
         }
         if (online || offline) {
@@ -410,7 +463,7 @@ const feed = {
                 }
             }
             selects.push(
-                `SELECT * FROM (SELECT id, created_at, user_id, display_name, type, location, world_name, NULL AS previous_location, time, group_name, NULL AS status, NULL AS status_description, NULL AS previous_status, NULL AS previous_status_description, NULL AS bio, NULL AS previous_bio, NULL AS owner_id, NULL AS avatar_name, NULL AS current_avatar_image_url, NULL AS current_avatar_thumbnail_image_url, NULL AS previous_current_avatar_image_url, NULL AS previous_current_avatar_thumbnail_image_url FROM ${dbVars.userPrefix}_feed_online_offline WHERE 1=1 ${query} ${vipQuery} ORDER BY id DESC LIMIT @perTable)`
+                `SELECT * FROM (SELECT id, created_at, user_id, display_name, provider, type, location, world_name, NULL AS previous_location, time, group_name, NULL AS status, NULL AS status_description, NULL AS previous_status, NULL AS previous_status_description, NULL AS bio, NULL AS previous_bio, NULL AS owner_id, NULL AS avatar_name, NULL AS current_avatar_image_url, NULL AS current_avatar_thumbnail_image_url, NULL AS previous_current_avatar_image_url, NULL AS previous_current_avatar_thumbnail_image_url FROM ${dbVars.userPrefix}_feed_online_offline WHERE 1=1 ${query} ${providerQuery} ${vipQuery} ORDER BY id DESC LIMIT @perTable)`
             );
         }
         if (selects.length === 0) {
@@ -420,50 +473,52 @@ const feed = {
         const args = {
             '@limit': maxEntries,
             '@perTable': maxEntries,
+            ...providerArgs,
             ...vipArgs
         };
         await sqliteService.execute(
             (dbRow) => {
-                const type = dbRow[4];
+                const type = dbRow[5];
                 const row = {
                     rowId: dbRow[0],
                     created_at: dbRow[1],
                     userId: dbRow[2],
                     displayName: dbRow[3],
+                    provider: dbRow[4],
                     type
                 };
                 switch (type) {
                     case 'GPS':
-                        row.location = dbRow[5];
-                        row.worldName = dbRow[6];
-                        row.previousLocation = dbRow[7];
-                        row.time = dbRow[8];
-                        row.groupName = dbRow[9];
+                        row.location = dbRow[6];
+                        row.worldName = dbRow[7];
+                        row.previousLocation = dbRow[8];
+                        row.time = dbRow[9];
+                        row.groupName = dbRow[10];
                         break;
                     case 'Status':
-                        row.status = dbRow[10];
-                        row.statusDescription = dbRow[11];
-                        row.previousStatus = dbRow[12];
-                        row.previousStatusDescription = dbRow[13];
+                        row.status = dbRow[11];
+                        row.statusDescription = dbRow[12];
+                        row.previousStatus = dbRow[13];
+                        row.previousStatusDescription = dbRow[14];
                         break;
                     case 'Bio':
-                        row.bio = dbRow[14];
-                        row.previousBio = dbRow[15];
+                        row.bio = dbRow[15];
+                        row.previousBio = dbRow[16];
                         break;
                     case 'Avatar':
-                        row.ownerId = dbRow[16];
-                        row.avatarName = dbRow[17];
-                        row.currentAvatarImageUrl = dbRow[18];
-                        row.currentAvatarThumbnailImageUrl = dbRow[19];
-                        row.previousCurrentAvatarImageUrl = dbRow[20];
-                        row.previousCurrentAvatarThumbnailImageUrl = dbRow[21];
+                        row.ownerId = dbRow[17];
+                        row.avatarName = dbRow[18];
+                        row.currentAvatarImageUrl = dbRow[19];
+                        row.currentAvatarThumbnailImageUrl = dbRow[20];
+                        row.previousCurrentAvatarImageUrl = dbRow[21];
+                        row.previousCurrentAvatarThumbnailImageUrl = dbRow[22];
                         break;
                     case 'Online':
                     case 'Offline':
-                        row.location = dbRow[5];
-                        row.worldName = dbRow[6];
-                        row.time = dbRow[8];
-                        row.groupName = dbRow[9];
+                        row.location = dbRow[6];
+                        row.worldName = dbRow[7];
+                        row.time = dbRow[9];
+                        row.groupName = dbRow[10];
                         break;
                 }
                 feedDatabase.push(row);
@@ -474,7 +529,7 @@ const feed = {
         return feedDatabase;
     },
 
-    async getFeedByInstanceId(instanceId, filters, vipList) {
+    async getFeedByInstanceId(instanceId, filters, vipList, provider = '') {
         let vipQuery = '';
         const vipArgs = {};
         if (vipList.length > 0) {
@@ -486,6 +541,7 @@ const feed = {
             });
             vipQuery = `AND user_id IN (${vipPlaceholders.join(', ')})`;
         }
+        const { providerQuery, providerArgs } = buildProviderFilter(provider);
         let gps = true;
         let online = true;
         let offline = true;
@@ -513,6 +569,7 @@ const feed = {
             'created_at',
             'user_id',
             'display_name',
+            'provider',
             'type',
             'location',
             'world_name',
@@ -534,7 +591,7 @@ const feed = {
         ].join(', ');
         if (gps) {
             selects.push(
-                `SELECT * FROM (SELECT id, created_at, user_id, display_name, 'GPS' AS type, location, world_name, previous_location, time, group_name, NULL AS status, NULL AS status_description, NULL AS previous_status, NULL AS previous_status_description, NULL AS bio, NULL AS previous_bio, NULL AS owner_id, NULL AS avatar_name, NULL AS current_avatar_image_url, NULL AS current_avatar_thumbnail_image_url, NULL AS previous_current_avatar_image_url, NULL AS previous_current_avatar_thumbnail_image_url FROM ${dbVars.userPrefix}_feed_gps WHERE location LIKE @instanceLike ${vipQuery} ORDER BY created_at DESC, id DESC LIMIT @perTable)`
+                `SELECT * FROM (SELECT id, created_at, user_id, display_name, provider, 'GPS' AS type, location, world_name, previous_location, time, group_name, NULL AS status, NULL AS status_description, NULL AS previous_status, NULL AS previous_status_description, NULL AS bio, NULL AS previous_bio, NULL AS owner_id, NULL AS avatar_name, NULL AS current_avatar_image_url, NULL AS current_avatar_thumbnail_image_url, NULL AS previous_current_avatar_image_url, NULL AS previous_current_avatar_thumbnail_image_url FROM ${dbVars.userPrefix}_feed_gps WHERE location LIKE @instanceLike ${providerQuery} ${vipQuery} ORDER BY created_at DESC, id DESC LIMIT @perTable)`
             );
         }
         if (online || offline) {
@@ -547,7 +604,7 @@ const feed = {
                 }
             }
             selects.push(
-                `SELECT * FROM (SELECT id, created_at, user_id, display_name, type, location, world_name, NULL AS previous_location, time, group_name, NULL AS status, NULL AS status_description, NULL AS previous_status, NULL AS previous_status_description, NULL AS bio, NULL AS previous_bio, NULL AS owner_id, NULL AS avatar_name, NULL AS current_avatar_image_url, NULL AS current_avatar_thumbnail_image_url, NULL AS previous_current_avatar_image_url, NULL AS previous_current_avatar_thumbnail_image_url FROM ${dbVars.userPrefix}_feed_online_offline WHERE location LIKE @instanceLike ${query} ${vipQuery} ORDER BY created_at DESC, id DESC LIMIT @perTable)`
+                `SELECT * FROM (SELECT id, created_at, user_id, display_name, provider, type, location, world_name, NULL AS previous_location, time, group_name, NULL AS status, NULL AS status_description, NULL AS previous_status, NULL AS previous_status_description, NULL AS bio, NULL AS previous_bio, NULL AS owner_id, NULL AS avatar_name, NULL AS current_avatar_image_url, NULL AS current_avatar_thumbnail_image_url, NULL AS previous_current_avatar_image_url, NULL AS previous_current_avatar_thumbnail_image_url FROM ${dbVars.userPrefix}_feed_online_offline WHERE location LIKE @instanceLike ${query} ${providerQuery} ${vipQuery} ORDER BY created_at DESC, id DESC LIMIT @perTable)`
             );
         }
         if (selects.length === 0) {
@@ -558,32 +615,34 @@ const feed = {
             '@instanceLike': `%${instanceId}%`,
             '@limit': dbVars.searchTableSize,
             '@perTable': dbVars.searchTableSize,
+            ...providerArgs,
             ...vipArgs
         };
         await sqliteService.execute(
             (dbRow) => {
-                const type = dbRow[4];
+                const type = dbRow[5];
                 const row = {
                     rowId: dbRow[0],
                     created_at: dbRow[1],
                     userId: dbRow[2],
                     displayName: dbRow[3],
+                    provider: dbRow[4],
                     type
                 };
                 switch (type) {
                     case 'GPS':
-                        row.location = dbRow[5];
-                        row.worldName = dbRow[6];
-                        row.previousLocation = dbRow[7];
-                        row.time = dbRow[8];
-                        row.groupName = dbRow[9];
+                        row.location = dbRow[6];
+                        row.worldName = dbRow[7];
+                        row.previousLocation = dbRow[8];
+                        row.time = dbRow[9];
+                        row.groupName = dbRow[10];
                         break;
                     case 'Online':
                     case 'Offline':
-                        row.location = dbRow[5];
-                        row.worldName = dbRow[6];
-                        row.time = dbRow[8];
-                        row.groupName = dbRow[9];
+                        row.location = dbRow[6];
+                        row.worldName = dbRow[7];
+                        row.time = dbRow[9];
+                        row.groupName = dbRow[10];
                         break;
                 }
                 feedDatabase.push(row);

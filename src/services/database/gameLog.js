@@ -3,6 +3,14 @@ import { dbVars } from '../database';
 import sqliteService from '../sqlite.js';
 
 function isResoniteExternalUser(input) {
+    if (
+        String(input?.provider || '')
+            .trim()
+            .toLowerCase() === 'resonite'
+    ) {
+        return true;
+    }
+
     const normalizedId = String(input?.id || '').trim();
     return normalizedId.startsWith('resonite:') || /^[uU]-/.test(normalizedId);
 }
@@ -884,16 +892,23 @@ const gameLog = {
         return ref;
     },
 
-    async getAllUserStats(userIds, displayNames) {
+    async getAllUserStats(userIds, displayNames, providerHints = {}) {
         if (!userIds.length && !displayNames.length) {
             return [];
         }
         var data = [];
         const resoniteUserIds = userIds.filter((userId) =>
-            isResoniteExternalUser({ id: userId })
+            isResoniteExternalUser({
+                id: userId,
+                provider: providerHints?.[userId]
+            })
         );
         const vrchatUserIds = userIds.filter(
-            (userId) => !isResoniteExternalUser({ id: userId })
+            (userId) =>
+                !isResoniteExternalUser({
+                    id: userId,
+                    provider: providerHints?.[userId]
+                })
         );
         // this makes me most sad
         var userIdsString = '';

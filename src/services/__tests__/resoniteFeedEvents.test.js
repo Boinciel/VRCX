@@ -11,6 +11,7 @@ import { buildResonitePresenceFeedUpdate } from '../resoniteFeedEvents';
  *   statusDescription?: string,
  *   location?: string,
  *   traveling?: string,
+ *   accessLevel?: string,
  *   locationAt?: number,
  *   onlineFor?: number | string,
  *   offlineFor?: number | string,
@@ -25,6 +26,7 @@ function makeFriend({
     statusDescription = 'Online on version 2026.4.21',
     location = 'The Navy Seal',
     traveling = 'The Navy Seal',
+    accessLevel = '',
     locationAt = 1_000,
     onlineFor = 1_000,
     offlineFor = '',
@@ -52,6 +54,7 @@ function makeFriend({
             $previousLocation: previousLocation
         },
         resonite: {
+            accessLevel,
             locationName: traveling,
             currentSessionName: traveling
         }
@@ -133,6 +136,37 @@ describe('buildResonitePresenceFeedUpdate', () => {
             time: 5_000
         });
         expect(result.refPatch.$location_at).toBe(7_000);
+    });
+
+    test('appends access level suffix to resonite feed world names', () => {
+        const previousFriend = makeFriend({
+            location: 'Old World',
+            traveling: 'Old World',
+            accessLevel: 'contactsplus',
+            locationAt: 2_000
+        });
+        const nextFriend = makeFriend({
+            location: 'New World',
+            traveling: 'New World',
+            accessLevel: 'anyone',
+            locationAt: 2_000
+        });
+
+        const result = buildResonitePresenceFeedUpdate(
+            previousFriend,
+            nextFriend,
+            {
+                now: () => 7_000,
+                nowIso: () => '2026-04-21T00:00:07.000Z'
+            }
+        );
+
+        expect(result.feedEntries[0]).toMatchObject({
+            type: 'GPS',
+            location: 'New World - Public',
+            worldName: 'New World - Public',
+            previousLocation: 'Old World - Contacts+'
+        });
     });
 
     test('emits gps event after a sparse blank location update', () => {
@@ -221,6 +255,38 @@ describe('buildResonitePresenceFeedUpdate', () => {
         });
         expect(result.refPatch.$offline_for).toBe(9_000);
         expect(result.refPatch.$online_for).toBe('');
+    });
+
+    test('emits offline event using the last real location after a traveling placeholder', () => {
+        const previousFriend = makeFriend({
+            location: 'traveling',
+            traveling: 'traveling',
+            locationAt: 3_000,
+            previousLocation: 'Private'
+        });
+        const nextFriend = makeFriend({
+            state: 'offline',
+            status: 'busy',
+            statusDescription: '',
+            location: 'offline',
+            traveling: ''
+        });
+
+        const result = buildResonitePresenceFeedUpdate(
+            previousFriend,
+            nextFriend,
+            {
+                now: () => 9_000,
+                nowIso: () => '2026-04-21T00:00:09.000Z'
+            }
+        );
+
+        expect(result.feedEntries[0]).toMatchObject({
+            type: 'Offline',
+            location: 'Private',
+            worldName: 'Private',
+            time: 6_000
+        });
     });
 
     test('emits status event when online status text changes', () => {

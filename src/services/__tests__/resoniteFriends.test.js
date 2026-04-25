@@ -3,6 +3,12 @@ import { beforeEach, describe, expect, test, vi } from 'vitest';
 const mockWebApiServiceExecute = vi.fn();
 const mockConfigRepositoryGetString = vi.fn();
 const mockConfigRepositorySetString = vi.fn();
+const { mockDatabase } = vi.hoisted(() => ({
+    mockDatabase: {
+        getResoniteCachedProfiles: vi.fn(),
+        upsertResoniteCachedProfile: vi.fn()
+    }
+}));
 const mockAdvancedSettingsStore = {
     resoniteFriendsEndpoint: '',
     resoniteApiKey: ''
@@ -22,6 +28,10 @@ vi.mock('../../stores', () => ({
     useAdvancedSettingsStore: () => mockAdvancedSettingsStore
 }));
 
+vi.mock('../../services/database', () => ({
+    database: mockDatabase
+}));
+
 vi.mock('../../services/config', () => ({
     default: {
         getString: (...args) => mockConfigRepositoryGetString(...args),
@@ -33,6 +43,8 @@ import {
     buildResoniteAuthorizationHeader,
     createResoniteSession,
     fetchResoniteFriends,
+    fetchResoniteUserProfiles,
+    mergeResoniteUserProfile,
     normalizeResoniteFriends,
     normalizeResoniteFriend,
     isValidResoniteFriendContext
@@ -47,6 +59,8 @@ describe('resoniteFriends service', () => {
         });
         mockConfigRepositoryGetString.mockResolvedValue('stable-uid-hash');
         mockConfigRepositorySetString.mockResolvedValue(undefined);
+        mockDatabase.getResoniteCachedProfiles.mockResolvedValue([]);
+        mockDatabase.upsertResoniteCachedProfile.mockResolvedValue(undefined);
 
         vi.stubGlobal('crypto', {
             randomUUID: vi.fn(() => '123e4567-e89b-12d3-a456-426614174000'),
@@ -567,6 +581,223 @@ describe('resoniteFriends service', () => {
         });
     });
 
+    describe('fetchResoniteUserProfiles', () => {
+        test('hydrates profile results from structured cache before network fetch', async () => {
+            mockDatabase.getResoniteCachedProfiles.mockResolvedValue([
+                {
+                    resoniteUserId: 'U-cache',
+                    displayName: 'Cached User',
+                    username: 'cached_user',
+                    registrationDate: '2026-04-01T00:00:00.000Z',
+                    isVerified: 1,
+                    tags: ['builder'],
+                    iconUrl: 'https://example.com/cached.png',
+                    tagline: 'Cached tagline',
+                    description: 'Cached description',
+                    fetchedAt: Date.now(),
+                    expiresAt: Date.now() + 60_000,
+                    payload: {
+                        id: 'U-cache',
+                        username: 'cached_user',
+                        registrationDate: '2026-04-01T00:00:00.000Z',
+                        isVerified: true,
+                        tags: ['builder'],
+                        profile: {
+                            iconUrl: 'https://example.com/cached.png',
+                            tagline: 'Cached tagline',
+                            description: 'Cached description'
+                        }
+                    }
+                }
+            ]);
+
+            const result = await fetchResoniteUserProfiles(['U-cache'], {
+                apiBaseUrl: 'https://api.resonite.com'
+            });
+
+            expect(result.get('U-cache')).toMatchObject({
+                id: 'U-cache',
+                username: 'cached_user'
+            });
+            expect(mockWebApiServiceExecute).not.toHaveBeenCalled();
+        });
+
+        test('persists fetched user profiles into structured cache', async () => {
+            mockWebApiServiceExecute.mockResolvedValue({
+                status: 200,
+                data: JSON.stringify({
+                    id: 'U-network',
+                    username: 'network_user',
+                    registrationDate: '2026-04-10T00:00:00.000Z',
+                    isVerified: true,
+                    tags: ['tester'],
+                    profile: {
+                        iconUrl:
+                            'resdb:///6683441e7234417d08e9d7228f59afc55bac656ad8b1833f34a8105644a49754.webp',
+                        tagline: 'Fetched tagline',
+                        description: 'Fetched description'
+                    }
+                })
+            });
+
+            const result = await fetchResoniteUserProfiles(['U-network'], {
+                apiBaseUrl: 'https://api.resonite.com',
+                headers: {
+                    Authorization: 'res U-test:token'
+                }
+            });
+
+            expect(result.get('U-network')).toMatchObject({
+                id: 'U-network',
+                username: 'network_user'
+            });
+            expect(
+                mockDatabase.upsertResoniteCachedProfile
+            ).toHaveBeenCalledWith(
+                expect.objectContaining({
+                    resoniteUserId: 'U-network',
+                    username: 'network_user',
+                    registrationDate: '2026-04-10T00:00:00.000Z',
+                    tagline: 'Fetched tagline',
+                    description: 'Fetched description',
+                    iconUrl:
+                        'https://assets.resonite.com/6683441e7234417d08e9d7228f59afc55bac656ad8b1833f34a8105644a49754'
+                })
+            );
+        });
+    });
+
+    describe('mergeResoniteUserProfile', () => {
+        test('prefers fetched profile-owned fields over stale snapshot values', () => {
+            const friend = {
+                id: 'resonite:U-profile',
+                name: 'Snapshot User',
+                provider: 'resonite',
+                isExternal: true,
+                ref: {
+                    displayName: 'Snapshot User',
+                    statusDescription: '',
+                    profileImageUrl: 'https://example.com/old.png',
+                    userIcon: 'https://example.com/old.png'
+                },
+                resonite: {
+                    username: 'old_username',
+                    normalizedUsername: 'old_username',
+                    registrationDate: '2025-01-01T00:00:00.000Z',
+                    isVerified: false,
+                    tags: ['old-tag'],
+                    profile: {
+                        iconUrl: 'https://example.com/old.png',
+                        tagline: 'Old tagline',
+                        description: 'Old description'
+                    }
+                }
+            };
+
+            const merged = mergeResoniteUserProfile(friend, {
+                username: 'new_username',
+                normalizedUsername: 'new_username',
+                registrationDate: '2026-04-24T00:00:00.000Z',
+                isVerified: true,
+                tags: ['new-tag'],
+                profile: {
+                    iconUrl:
+                        'resdb:///6683441e7234417d08e9d7228f59afc55bac656ad8b1833f34a8105644a49754.webp',
+                    tagline: 'New tagline',
+                    description: 'New description'
+                }
+            });
+
+            expect(merged.resonite.username).toBe('new_username');
+            expect(merged.resonite.normalizedUsername).toBe('new_username');
+            expect(merged.resonite.registrationDate).toBe(
+                '2026-04-24T00:00:00.000Z'
+            );
+            expect(merged.resonite.isVerified).toBe(true);
+            expect(merged.resonite.tags).toEqual(['new-tag']);
+            expect(merged.resonite.profile.tagline).toBe('New tagline');
+            expect(merged.resonite.profile.description).toBe('New description');
+            expect(merged.resonite.profile.iconUrl).toBe(
+                'https://assets.resonite.com/6683441e7234417d08e9d7228f59afc55bac656ad8b1833f34a8105644a49754'
+            );
+            expect(merged.resonite.mergeTrace.profile.username).toEqual(
+                expect.objectContaining({
+                    winner: 'incoming',
+                    reason: 'fetched-profile-authoritative',
+                    selectedValue: 'new_username'
+                })
+            );
+            expect(
+                merged.resonite.mergeTrace.profile['profile.tagline']
+            ).toEqual(
+                expect.objectContaining({
+                    winner: 'incoming',
+                    reason: 'fetched-profile-authoritative',
+                    selectedValue: 'New tagline'
+                })
+            );
+        });
+
+        test('keeps existing profile-owned fields when fetched payload omits them', () => {
+            const friend = {
+                id: 'resonite:U-profile-fallback',
+                name: 'Snapshot User',
+                provider: 'resonite',
+                isExternal: true,
+                ref: {
+                    displayName: 'Snapshot User',
+                    statusDescription: ''
+                },
+                resonite: {
+                    username: 'existing_username',
+                    normalizedUsername: 'existing_username',
+                    registrationDate: '2026-04-01T00:00:00.000Z',
+                    isVerified: true,
+                    tags: ['existing-tag'],
+                    profile: {
+                        iconUrl: 'https://example.com/existing.png',
+                        tagline: 'Existing tagline',
+                        description: 'Existing description'
+                    }
+                }
+            };
+
+            const merged = mergeResoniteUserProfile(friend, {
+                profile: {}
+            });
+
+            expect(merged.resonite.username).toBe('existing_username');
+            expect(merged.resonite.normalizedUsername).toBe(
+                'existing_username'
+            );
+            expect(merged.resonite.registrationDate).toBe(
+                '2026-04-01T00:00:00.000Z'
+            );
+            expect(merged.resonite.isVerified).toBe(true);
+            expect(merged.resonite.tags).toEqual(['existing-tag']);
+            expect(merged.resonite.profile.tagline).toBe('Existing tagline');
+            expect(merged.resonite.profile.description).toBe(
+                'Existing description'
+            );
+            expect(merged.resonite.mergeTrace.profile.username).toEqual(
+                expect.objectContaining({
+                    winner: 'existing',
+                    reason: 'fetched-profile-missing',
+                    selectedValue: 'existing_username'
+                })
+            );
+            expect(
+                merged.resonite.mergeTrace.profile['profile.description']
+            ).toEqual(
+                expect.objectContaining({
+                    winner: 'existing',
+                    reason: 'fetched-profile-missing',
+                    selectedValue: 'Existing description'
+                })
+            );
+        });
+    });
+
     describe('normalizeResoniteFriend', () => {
         test('normalizes valid friend entry', () => {
             const entry = {
@@ -654,8 +885,10 @@ describe('resoniteFriends service', () => {
             expect(result.ref.statusDescription).toBe('');
             expect(result.ref.profileImageUrl).toBe('');
             expect(result.ref.userIcon).toBe('');
+            expect(result.ref.status).toBe('');
             expect(result.ref.location).toBe('offline');
             expect(result.ref.traveling).toBe('');
+            expect(result.resonite.hasPresenceSignals).toBe(false);
         });
 
         test('extracts ReCon contact metadata from nested userStatus/profile fields', () => {
@@ -745,7 +978,7 @@ describe('resoniteFriends service', () => {
             const result = normalizeResoniteFriend(entry);
 
             expect(result.state).toBe('offline');
-            expect(result.ref.status).toBe('busy');
+            expect(result.ref.status).toBe('');
             expect(result.ref.location).toBe('offline');
         });
 

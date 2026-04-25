@@ -142,6 +142,13 @@
                                 </div>
                             </template>
 
+                            <template v-else-if="item.row.type === 'resonite-instance-header'">
+                                <div class="mb-1 flex items-center">
+                                    <span class="inline text-xs truncate">{{ item.row.sessionName }}</span>
+                                    <span class="text-xs ml-1.5 flex-none">{{ `(${item.row.count})` }}</span>
+                                </div>
+                            </template>
+
                             <template v-else-if="item.row.type === 'friend-item'">
                                 <ContextMenu>
                                     <ContextMenuTrigger as-child>
@@ -258,6 +265,7 @@
     import Location from '../../../components/Location.vue';
     import configRepository from '../../../services/config';
     import { useStatusPresets } from '../../../components/dialogs/UserDialog/composables/useStatusPresets';
+    import { buildResoniteInstanceHeaderRow } from '../friendsSidebarUtils';
 
     import '@/styles/status-icon.css';
     import { showUserDialog } from '../../../coordinators/userCoordinator';
@@ -271,7 +279,8 @@
         onlineFriends,
         activeFriends,
         offlineFriends,
-        friendsInSameInstance
+        friendsInSameInstance,
+        resoniteFriendsInSameSession
     } = storeToRefs(friendStore);
     const appearanceSettingsStore = useAppearanceSettingsStore();
     const {
@@ -542,40 +551,68 @@
     }
 
     function buildSameInstanceRows(rows) {
-        if (isSidebarGroupByInstance.value && friendsInSameInstance.value.length) {
-            rows.push(
-                buildToggleRow({
-                    key: 'same-instance-header',
-                    label: t('side_panel.same_instance'),
-                    count: friendsInSameInstance.value.length,
-                    expanded: !isSidebarGroupByInstanceCollapsed.value,
-                    onClick: toggleSwitchGroupByInstanceCollapsed,
-                    paddingBottom: 4
-                })
-            );
+        const vrchatGroupCount = isSidebarGroupByInstance.value ? friendsInSameInstance.value.length : 0;
+        const resoniteGroupCount = isSidebarGroupByInstance.value ? resoniteFriendsInSameSession.value.length : 0;
 
-            if (!isSidebarGroupByInstanceCollapsed.value) {
-                friendsInSameInstance.value.forEach((friendArr, groupIndex) => {
-                    if (!friendArr || !friendArr.length) return;
-                    const groupKey = friendArr?.[0]?.ref?.$location?.tag ?? `group-${groupIndex}`;
+        if (!vrchatGroupCount && !resoniteGroupCount) {
+            return;
+        }
+
+        const totalFriendCount =
+            friendsInSameInstance.value.reduce((s, g) => s + g.length, 0) +
+            resoniteFriendsInSameSession.value.reduce((s, g) => s + g.length, 0);
+
+        rows.push(
+            buildToggleRow({
+                key: 'same-instance-header',
+                label: t('side_panel.same_instance'),
+                count: totalFriendCount,
+                expanded: !isSidebarGroupByInstanceCollapsed.value,
+                onClick: toggleSwitchGroupByInstanceCollapsed,
+                paddingBottom: 4
+            })
+        );
+
+        if (!isSidebarGroupByInstanceCollapsed.value) {
+            friendsInSameInstance.value.forEach((friendArr, groupIndex) => {
+                if (!friendArr || !friendArr.length) return;
+                const groupKey = friendArr?.[0]?.ref?.$location?.tag ?? `group-${groupIndex}`;
+                rows.push(
+                    buildInstanceHeaderRow(
+                        getFriendsLocations(friendArr, lastLocation.value),
+                        friendArr.length,
+                        `instance:${groupKey}`
+                    )
+                );
+                friendArr.forEach((friend, idx) => {
                     rows.push(
-                        buildInstanceHeaderRow(
-                            getFriendsLocations(friendArr, lastLocation.value),
-                            friendArr.length,
-                            `instance:${groupKey}`
-                        )
+                        buildFriendRow(friend, `instance:${groupKey}:${friend?.id ?? idx}`, {
+                            isGroupByInstance: true,
+                            paddingBottom: idx === friendArr.length - 1 ? 5 : undefined,
+                            itemStyle: idx === friendArr.length - 1 ? { marginBottom: '6px' } : undefined
+                        })
                     );
-                    friendArr.forEach((friend, idx) => {
-                        rows.push(
-                            buildFriendRow(friend, `instance:${groupKey}:${friend?.id ?? idx}`, {
-                                isGroupByInstance: true,
-                                paddingBottom: idx === friendArr.length - 1 ? 5 : undefined,
-                                itemStyle: idx === friendArr.length - 1 ? { marginBottom: '6px' } : undefined
-                            })
-                        );
-                    });
                 });
-            }
+            });
+
+            resoniteFriendsInSameSession.value.forEach((friendArr, groupIndex) => {
+                if (!friendArr || !friendArr.length) return;
+                const sessionHash = friendArr[0]?.resonite?.currentSessionHash ?? `resonite-group-${groupIndex}`;
+                const sessionName =
+                    friendArr[0]?.resonite?.currentSessionName || friendArr[0]?.resonite?.locationName || sessionHash;
+                rows.push(
+                    buildResoniteInstanceHeaderRow(sessionName, friendArr.length, `resonite-instance:${sessionHash}`)
+                );
+                friendArr.forEach((friend, idx) => {
+                    rows.push(
+                        buildFriendRow(friend, `resonite-instance:${sessionHash}:${friend?.id ?? idx}`, {
+                            isGroupByInstance: true,
+                            paddingBottom: idx === friendArr.length - 1 ? 5 : undefined,
+                            itemStyle: idx === friendArr.length - 1 ? { marginBottom: '6px' } : undefined
+                        })
+                    );
+                });
+            });
         }
     }
 

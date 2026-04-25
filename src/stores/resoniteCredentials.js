@@ -16,7 +16,10 @@ const RESONITE_DEFAULTS = {
     isPasswordEncrypted: false,
     apiKey: '',
     tokenExpiresAt: 0,
-    rememberMe: true
+    rememberMe: true,
+    rememberUsername: true,
+    rememberPassword: false,
+    autoRefreshExpiredToken: false
 };
 
 /**
@@ -26,6 +29,9 @@ const RESONITE_DEFAULTS = {
  * @property {string} [apiKey]
  * @property {number} [tokenExpiresAt]
  * @property {boolean} [rememberMe]
+ * @property {boolean} [rememberUsername]
+ * @property {boolean} [rememberPassword]
+ * @property {boolean} [autoRefreshExpiredToken]
  */
 
 export const useResoniteCredentialsStore = defineStore(
@@ -102,11 +108,14 @@ export const useResoniteCredentialsStore = defineStore(
 
         /** @param {ResoniteCredentialsSaveInput} param0 */
         async function saveResoniteCredentialsForCurrentUser({
-            username = '',
-            password = '',
-            apiKey = '',
-            tokenExpiresAt = 0,
-            rememberMe = true
+            username,
+            password,
+            apiKey,
+            tokenExpiresAt,
+            rememberMe,
+            rememberUsername,
+            rememberPassword,
+            autoRefreshExpiredToken
         }) {
             if (!watchState.isLoggedIn || !userStore.currentUser?.id) {
                 return false;
@@ -121,14 +130,46 @@ export const useResoniteCredentialsStore = defineStore(
             }
 
             const resonite = normalizeResoniteCredentials(entry.resonite);
-            resonite.username = String(username || resonite.username || '');
-            resonite.apiKey = String(apiKey || resonite.apiKey || '');
-            resonite.tokenExpiresAt = Number(
-                tokenExpiresAt || resonite.tokenExpiresAt || 0
-            );
-            resonite.rememberMe = rememberMe !== false;
+            resonite.rememberMe =
+                rememberMe === undefined
+                    ? resonite.rememberMe !== false
+                    : rememberMe !== false;
+            resonite.rememberUsername =
+                rememberUsername === undefined
+                    ? resonite.rememberUsername !== false
+                    : rememberUsername !== false;
+            resonite.rememberPassword =
+                rememberPassword === undefined
+                    ? resonite.rememberPassword !== false
+                    : rememberPassword !== false;
+            resonite.autoRefreshExpiredToken =
+                autoRefreshExpiredToken === undefined
+                    ? resonite.autoRefreshExpiredToken !== false
+                    : autoRefreshExpiredToken !== false;
 
-            if (typeof password === 'string' && password) {
+            resonite.username = resonite.rememberUsername
+                ? typeof username === 'string'
+                    ? username
+                    : String(resonite.username || '')
+                : '';
+            resonite.apiKey =
+                typeof apiKey === 'string'
+                    ? apiKey
+                    : String(resonite.apiKey || '');
+            resonite.tokenExpiresAt =
+                tokenExpiresAt === undefined
+                    ? Number(resonite.tokenExpiresAt || 0)
+                    : Number(tokenExpiresAt || 0);
+
+            if (!resonite.rememberUsername) {
+                resonite.autoRefreshExpiredToken = false;
+            }
+
+            if (!resonite.rememberPassword) {
+                resonite.password = '';
+                resonite.isPasswordEncrypted = false;
+                resonite.autoRefreshExpiredToken = false;
+            } else if (typeof password === 'string' && password) {
                 if (advancedSettingsStore.enablePrimaryPassword) {
                     const key = await promptPrimaryPasswordKey();
                     await security.decrypt(entry.loginParams.password, key);
@@ -138,6 +179,10 @@ export const useResoniteCredentialsStore = defineStore(
                     resonite.password = password;
                     resonite.isPasswordEncrypted = false;
                 }
+            } else if (password === '') {
+                resonite.password = '';
+                resonite.isPasswordEncrypted = false;
+                resonite.autoRefreshExpiredToken = false;
             }
 
             entry.resonite = resonite;

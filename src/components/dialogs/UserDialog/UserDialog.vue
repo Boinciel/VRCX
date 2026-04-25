@@ -50,7 +50,7 @@
                 <UserDialogActivityTab ref="activityTabRef" />
             </template>
 
-            <template #JSON>
+            <template v-if="!isExternalUser" #JSON>
                 <DialogJsonTab
                     :tree-data="treeData"
                     :tree-data-key="treeData?.id"
@@ -160,23 +160,16 @@
         );
     });
     const showResoniteTab = computed(() => {
-        if (!isExternalUser.value) {
-            return false;
-        }
-
         const resonite = userDialog.value?.ref?.resonite;
-        if (!resonite || typeof resonite !== 'object') {
-            return false;
-        }
+        const hasResonitePayload = Boolean(
+            resonite && typeof resonite === 'object' && Object.keys(resonite).length > 0
+        );
 
-        return Object.keys(resonite).length > 0;
+        return isExternalUser.value && hasResonitePayload;
     });
     const userDialogTabs = computed(() => {
         if (isExternalUser.value) {
-            const tabs = [
-                { value: 'Info', label: t('dialog.user.info.header') },
-                { value: 'JSON', label: t('dialog.user.json.header') }
-            ];
+            const tabs = [{ value: 'Info', label: t('dialog.user.info.header') }];
 
             if (showResoniteTab.value) {
                 tabs.splice(1, 0, { value: 'Resonite', label: 'Resonite' });
@@ -331,6 +324,26 @@
      * @param user
      */
     function getUserStateText(user) {
+        const isResoniteExternal = Boolean(user?.isExternal) || String(user?.id || '').startsWith('resonite:');
+        const hasKnownResoniteSession = Boolean(
+            String(
+                user?.resonite?.currentSessionHash ||
+                    user?.resonite?.realtime?.currentSessionHash ||
+                    user?.resonite?.currentSessionName ||
+                    user?.resonite?.locationName ||
+                    user?.location ||
+                    ''
+            ).trim()
+        );
+        if (
+            isResoniteExternal &&
+            hasKnownResoniteSession &&
+            !String(user?.state || '').trim() &&
+            !String(user?.status || '').trim()
+        ) {
+            return '';
+        }
+
         let state = '';
         if (user.state === 'active') {
             state = t('dialog.user.status.active');
@@ -388,12 +401,7 @@
         userDialog.value.lastActiveTab = tabName;
         const userId = userDialog.value.id;
 
-        if (
-            isExternalUser.value &&
-            tabName !== 'Info' &&
-            tabName !== 'JSON' &&
-            !(tabName === 'Resonite' && showResoniteTab.value)
-        ) {
+        if (isExternalUser.value && tabName !== 'Info' && !(tabName === 'Resonite' && showResoniteTab.value)) {
             userDialog.value.activeTab = 'Info';
             userDialog.value.lastActiveTab = 'Info';
             return;
@@ -450,12 +458,7 @@
     function loadLastActiveTab() {
         const tab = userDialog.value.lastActiveTab;
 
-        if (
-            isExternalUser.value &&
-            tab !== 'Info' &&
-            tab !== 'JSON' &&
-            !(tab === 'Resonite' && showResoniteTab.value)
-        ) {
+        if (isExternalUser.value && tab !== 'Info' && !(tab === 'Resonite' && showResoniteTab.value)) {
             tab = 'Info';
             userDialog.value.activeTab = tab;
             userDialog.value.lastActiveTab = tab;

@@ -219,6 +219,10 @@ export async function ensureResoniteSessionIsFresh() {
         return false;
     }
 
+    if (savedResonite.autoRefreshExpiredToken === false) {
+        return false;
+    }
+
     if (!isResoniteTokenExpired(savedResonite.tokenExpiresAt)) {
         return false;
     }

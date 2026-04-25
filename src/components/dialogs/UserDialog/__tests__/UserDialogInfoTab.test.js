@@ -4,6 +4,7 @@ import { flushPromises, shallowMount } from '@vue/test-utils';
 
 const mockFetchResoniteUserProfiles = vi.fn();
 const mockShowUserDialog = vi.fn();
+const mockShowSeededResoniteUserDialog = vi.fn();
 
 vi.mock('vue-i18n', () => ({
     useI18n: () => {
@@ -99,6 +100,12 @@ vi.mock('../../../../services/resoniteRealtime', () => ({
     resoniteSessionCacheVersion: { value: 0 }
 }));
 
+vi.mock('../../../../coordinators/userCoordinator', () => ({
+    showUserDialog: (...args) => mockShowUserDialog(...args),
+    showSeededResoniteUserDialog: (...args) =>
+        mockShowSeededResoniteUserDialog(...args)
+}));
+
 import UserDialogInfoTab from '../UserDialogInfoTab.vue';
 import { miscRequest } from '../../../../api';
 import {
@@ -113,6 +120,30 @@ import {
     getResoniteSessionByHash,
     refreshResoniteSessionByHash
 } from '../../../../services/resoniteRealtime';
+
+const fallbackAppApiMethods = new Map();
+
+globalThis.AppApi = new Proxy(
+    {
+        ...(globalThis.AppApi || {}),
+        OpenLink: vi.fn(),
+        SetTrayIconNotification: vi.fn(),
+        GetVersion: vi.fn().mockResolvedValue('0.0.0')
+    },
+    {
+        get(target, prop, receiver) {
+            if (Reflect.has(target, prop)) {
+                return Reflect.get(target, prop, receiver);
+            }
+
+            if (!fallbackAppApiMethods.has(prop)) {
+                fallbackAppApiMethods.set(prop, vi.fn());
+            }
+
+            return fallbackAppApiMethods.get(prop);
+        }
+    }
+);
 
 /**
  *
@@ -245,6 +276,12 @@ describe('UserDialogInfoTab.vue', () => {
     beforeEach(() => {
         vi.clearAllMocks();
         vi.mocked(getResoniteSessionByHash).mockReturnValue(null);
+        globalThis.AppApi.OpenLink.mockReset();
+        globalThis.AppApi.SetTrayIconNotification.mockReset();
+        globalThis.AppApi.GetVersion.mockResolvedValue('0.0.0');
+        fallbackAppApiMethods.clear();
+        mockShowUserDialog.mockReset();
+        mockShowSeededResoniteUserDialog.mockReset();
     });
 
     describe('unit behavior', () => {
@@ -262,7 +299,7 @@ describe('UserDialogInfoTab.vue', () => {
             expect(creditsSpy).toHaveBeenCalledTimes(0);
         });
 
-        test('refreshResoniteSessionInfo refreshes contacts and forces current session hash resolution', async () => {
+        test('refreshResoniteSessionInfo only refreshes the current session cache', async () => {
             const wrapper = mountComponent({
                 userDialog: {
                     id: 'resonite:U-host',
@@ -293,13 +330,271 @@ describe('UserDialogInfoTab.vue', () => {
             await wrapper.vm.refreshResoniteSessionInfo();
 
             const friendStore = useFriendStore();
-            expect(friendStore.refreshResoniteFriends).toHaveBeenCalledTimes(1);
+            expect(friendStore.refreshResoniteFriends).not.toHaveBeenCalled();
             expect(refreshResoniteSessionByHash).toHaveBeenCalledWith({
                 sessionHash: 'S-hash',
                 userId: 'U-host',
                 apiKey: 'U-test:session-token',
                 force: true
             });
+        });
+
+        test('openResoniteSession falls back to a session deeplink when sessionURLs are missing', () => {
+            vi.mocked(getResoniteSessionByHash).mockReturnValue({
+                sessionId: 'S-public',
+                name: 'Soft Sea of Stars',
+                sessionURLs: [],
+                sessionUsers: []
+            });
+
+            const wrapper = mountComponent({
+                userDialog: {
+                    id: 'resonite:U-host',
+                    isExternal: true,
+                    friend: {
+                        state: 'online',
+                        ref: {
+                            location: 'Soft Sea of Stars'
+                        }
+                    },
+                    ref: {
+                        id: 'resonite:U-host',
+                        location: 'Soft Sea of Stars',
+                        resonite: {
+                            currentSessionHash: 'S-hash'
+                        },
+                        state: 'online',
+                        displayName: 'HostUser',
+                        bio: '',
+                        bioLinks: [],
+                        profilePicOverride: '',
+                        currentAvatarImageUrl: '',
+                        currentAvatarTags: [],
+                        $online_for: 1000,
+                        last_login: '2025-01-01T00:00:00.000Z',
+                        last_activity: '2025-01-01T00:00:00.000Z',
+                        date_joined: '2020-01-01',
+                        allowAvatarCopying: true
+                    },
+                    $location: null,
+                    users: []
+                }
+            });
+
+            wrapper.vm.openResoniteSession();
+
+            expect(globalThis.AppApi.OpenLink).toHaveBeenCalledWith(
+                'resonite://session/S-public'
+            );
+        });
+
+        test('openResoniteSessionUserDialog seeds session metadata for non-contact participants', () => {
+            vi.mocked(getResoniteSessionByHash).mockReturnValue({
+                sessionId: 'S-public',
+                name: 'Soft Sea of Stars',
+                sessionUsers: []
+            });
+
+            const wrapper = mountComponent({
+                userDialog: {
+                    id: 'resonite:U-host',
+                    isExternal: true,
+                    ref: {
+                        id: 'resonite:U-host',
+                        location: 'Soft Sea of Stars',
+                        resonite: {
+                            currentSessionHash: 'S-hash',
+                            locationName: 'Soft Sea of Stars'
+                        },
+                        state: 'online',
+                        displayName: 'HostUser',
+                        bio: '',
+                        bioLinks: [],
+                        profilePicOverride: '',
+                        currentAvatarImageUrl: '',
+                        currentAvatarTags: [],
+                        $online_for: 1000,
+                        last_login: '2025-01-01T00:00:00.000Z',
+                        last_activity: '2025-01-01T00:00:00.000Z',
+                        date_joined: '2020-01-01',
+                        allowAvatarCopying: true
+                    }
+                }
+            });
+
+            wrapper.vm.openResoniteSessionUserDialog({
+                userID: 'U-other',
+                username: 'OtherUser',
+                isPresent: true
+            });
+
+            expect(mockShowSeededResoniteUserDialog).toHaveBeenCalledWith(
+                expect.objectContaining({
+                    userId: 'U-other',
+                    state: 'online',
+                    locationName: 'Soft Sea of Stars',
+                    sessionHash: 'S-hash',
+                    sessionName: 'Soft Sea of Stars',
+                    sessionId: 'S-public'
+                })
+            );
+            const friendStore = useFriendStore();
+            expect(friendStore.upsertResoniteFriend).not.toHaveBeenCalled();
+        });
+
+        test('seeded participant click-through does not create a sidebar friend entry', () => {
+            const wrapper = mountComponent({
+                userDialog: {
+                    id: 'resonite:U-host',
+                    isExternal: true,
+                    ref: {
+                        id: 'resonite:U-host',
+                        location: 'Soft Sea of Stars',
+                        resonite: {
+                            currentSessionHash: 'S-hash',
+                            locationName: 'Soft Sea of Stars'
+                        },
+                        state: 'online',
+                        displayName: 'HostUser',
+                        bio: '',
+                        bioLinks: [],
+                        profilePicOverride: '',
+                        currentAvatarImageUrl: '',
+                        currentAvatarTags: [],
+                        $online_for: 1000,
+                        last_login: '2025-01-01T00:00:00.000Z',
+                        last_activity: '2025-01-01T00:00:00.000Z',
+                        date_joined: '2020-01-01',
+                        allowAvatarCopying: true
+                    }
+                },
+                friendsEntries: [
+                    [
+                        'resonite:U-contact',
+                        {
+                            id: 'resonite:U-contact',
+                            name: 'KnownContact',
+                            provider: 'resonite',
+                            isExternal: true,
+                            ref: { displayName: 'KnownContact' }
+                        }
+                    ]
+                ]
+            });
+
+            const friendStore = useFriendStore();
+            const initialKeys = Array.from(friendStore.friends.keys());
+
+            wrapper.vm.openResoniteSessionUserDialog({
+                userID: 'U-other',
+                username: 'OtherUser',
+                isPresent: true
+            });
+
+            expect(Array.from(friendStore.friends.keys())).toEqual(initialKeys);
+            expect(friendStore.friends.has('resonite:U-other')).toBe(false);
+            expect(mockShowSeededResoniteUserDialog).toHaveBeenCalledWith(
+                expect.objectContaining({ userId: 'U-other' })
+            );
+        });
+
+        test('openResoniteSessionUserDialog does not mark non-host absent participants offline', () => {
+            vi.mocked(getResoniteSessionByHash).mockReturnValue({
+                sessionId: 'S-public',
+                hostUserId: 'U-host',
+                name: 'Soft Sea of Stars',
+                sessionUsers: []
+            });
+
+            const wrapper = mountComponent({
+                userDialog: {
+                    id: 'resonite:U-host',
+                    isExternal: true,
+                    ref: {
+                        id: 'resonite:U-host',
+                        location: 'Soft Sea of Stars',
+                        resonite: {
+                            currentSessionHash: 'S-hash',
+                            locationName: 'Soft Sea of Stars'
+                        },
+                        state: 'online',
+                        displayName: 'HostUser',
+                        bio: '',
+                        bioLinks: [],
+                        profilePicOverride: '',
+                        currentAvatarImageUrl: '',
+                        currentAvatarTags: [],
+                        $online_for: 1000,
+                        last_login: '2025-01-01T00:00:00.000Z',
+                        last_activity: '2025-01-01T00:00:00.000Z',
+                        date_joined: '2020-01-01',
+                        allowAvatarCopying: true
+                    }
+                }
+            });
+
+            wrapper.vm.openResoniteSessionUserDialog({
+                userID: 'U-other',
+                username: 'OtherUser',
+                isPresent: false
+            });
+
+            expect(mockShowSeededResoniteUserDialog).toHaveBeenCalledWith(
+                expect.objectContaining({
+                    userId: 'U-other',
+                    state: '',
+                    status: ''
+                })
+            );
+        });
+
+        test('openResoniteSessionUserDialog keeps offline only for an absent host', () => {
+            vi.mocked(getResoniteSessionByHash).mockReturnValue({
+                sessionId: 'S-public',
+                hostUserId: 'U-host',
+                name: 'Soft Sea of Stars',
+                sessionUsers: []
+            });
+
+            const wrapper = mountComponent({
+                userDialog: {
+                    id: 'resonite:U-host',
+                    isExternal: true,
+                    ref: {
+                        id: 'resonite:U-host',
+                        location: 'Soft Sea of Stars',
+                        resonite: {
+                            currentSessionHash: 'S-hash',
+                            locationName: 'Soft Sea of Stars'
+                        },
+                        state: 'online',
+                        displayName: 'HostUser',
+                        bio: '',
+                        bioLinks: [],
+                        profilePicOverride: '',
+                        currentAvatarImageUrl: '',
+                        currentAvatarTags: [],
+                        $online_for: 1000,
+                        last_login: '2025-01-01T00:00:00.000Z',
+                        last_activity: '2025-01-01T00:00:00.000Z',
+                        date_joined: '2020-01-01',
+                        allowAvatarCopying: true
+                    }
+                }
+            });
+
+            wrapper.vm.openResoniteSessionUserDialog({
+                userID: 'U-host',
+                username: 'HostUser',
+                isPresent: false
+            });
+
+            expect(mockShowSeededResoniteUserDialog).toHaveBeenCalledWith(
+                expect.objectContaining({
+                    userId: 'U-host',
+                    state: 'offline'
+                })
+            );
         });
     });
 
@@ -489,6 +784,57 @@ describe('UserDialogInfoTab.vue', () => {
             expect(wrapper.html()).not.toContain('refresh-cw-stub');
             expect(wrapper.html()).not.toContain('users-round-stub');
             expect(wrapper.html()).not.toContain('user-plus2-stub');
+        });
+
+        test('shows Resonite action buttons for offline users when the session is known', () => {
+            vi.mocked(getResoniteSessionByHash).mockReturnValue({
+                sessionId: 'S-headless',
+                name: 'Headless Lounge',
+                sessionURLs: ['resonite://session/headless'],
+                sessionUsers: []
+            });
+
+            const wrapper = mountComponent({
+                userDialog: {
+                    id: 'resonite:U-headless',
+                    isExternal: true,
+                    friend: {
+                        state: 'offline',
+                        ref: {
+                            location: 'Headless Lounge'
+                        }
+                    },
+                    ref: {
+                        id: 'resonite:U-headless',
+                        location: 'Headless Lounge',
+                        state: 'offline',
+                        displayName: 'HeadlessHost',
+                        resonite: {
+                            currentSessionHash: 'S-headless-hash',
+                            locationName: 'Headless Lounge'
+                        },
+                        bio: '',
+                        bioLinks: [],
+                        profilePicOverride: '',
+                        currentAvatarImageUrl: '',
+                        currentAvatarTags: [],
+                        $online_for: 1000,
+                        last_login: '2025-01-01T00:00:00.000Z',
+                        last_activity: '2025-01-01T00:00:00.000Z',
+                        date_joined: '2020-01-01',
+                        allowAvatarCopying: true
+                    },
+                    $location: null,
+                    users: []
+                }
+            });
+
+            expect(wrapper.html()).toContain(
+                'dialog.user.info.launch_invite_tooltip'
+            );
+            expect(wrapper.html()).toContain(
+                'dialog.user.info.refresh_instance_info'
+            );
         });
 
         test('hides VRChat-only info fields for Resonite contacts while keeping useful stats', () => {

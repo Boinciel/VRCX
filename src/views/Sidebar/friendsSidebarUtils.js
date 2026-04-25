@@ -67,6 +67,22 @@ export function buildInstanceHeaderRow(location, count, key) {
 }
 
 /**
+ * @param {string} sessionName - Human-readable Resonite session name
+ * @param {number} count - Number of contacts in the session
+ * @param {string} key - Unique key
+ * @returns {object} Row object
+ */
+export function buildResoniteInstanceHeaderRow(sessionName, count, key) {
+    return {
+        type: 'resonite-instance-header',
+        key,
+        sessionName,
+        count,
+        paddingBottom: 4
+    };
+}
+
+/**
  * Estimate pixel height for a virtual row.
  * @param {object} row - Row object with type property
  * @returns {number} Estimated height in pixels
@@ -82,6 +98,9 @@ export function estimateRowSize(row) {
         return 24 + (row.paddingBottom || 0);
     }
     if (row.type === 'instance-header') {
+        return 26 + (row.paddingBottom || 0);
+    }
+    if (row.type === 'resonite-instance-header') {
         return 26 + (row.paddingBottom || 0);
     }
     return 52 + (row.paddingBottom || 0);
