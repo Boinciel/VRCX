@@ -78,7 +78,13 @@ function userStatusClass(user, pendingOffline = false, currentUser) {
                 platform !== 'web'
         };
     }
-    if (!user.isFriend) {
+    const isResoniteExternalUser =
+        user.isExternal === true ||
+        user.provider === 'resonite' ||
+        String(id || '').startsWith('resonite:') ||
+        /^[uU]-/.test(String(id || '')) ||
+        Boolean(user.resonite);
+    if (!user.isFriend && !isResoniteExternalUser) {
         return null;
     }
     if (pendingOffline) {
@@ -145,7 +151,48 @@ function userStatusClass(user, pendingOffline = false, currentUser) {
     ) {
         style.mobile = true;
     }
+
+    const resoniteStatus = getResonitePresenceStatus(user);
+    if (isResoniteExternalUser && resoniteStatus) {
+        style[`resonite-${resoniteStatus}`] = true;
+    }
+
     return style;
+}
+
+function getResonitePresenceStatus(user) {
+    const normalizedStatus = firstNonEmptyString(
+        user?.resonite?.onlineStatus,
+        user?.resonite?.realtime?.onlineStatus,
+        user?.onlineStatus,
+        user?.ref?.resonite?.onlineStatus,
+        user?.ref?.resonite?.realtime?.onlineStatus
+    )
+        .toLowerCase()
+        .trim();
+
+    if (
+        normalizedStatus === 'online' ||
+        normalizedStatus === 'sociable' ||
+        normalizedStatus === 'away' ||
+        normalizedStatus === 'busy' ||
+        normalizedStatus === 'invisible'
+    ) {
+        return normalizedStatus;
+    }
+
+    return '';
+}
+
+function firstNonEmptyString(...values) {
+    for (const value of values) {
+        const normalized = String(value || '').trim();
+        if (normalized) {
+            return normalized;
+        }
+    }
+
+    return '';
 }
 
 /**

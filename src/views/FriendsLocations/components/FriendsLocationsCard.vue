@@ -33,8 +33,18 @@
                     v-if="displayInstanceInfo"
                     @click.stop
                     class="friend-card__world flex items-center justify-start box-border max-w-full min-w-0 overflow-hidden"
-                    :title="friend.worldName">
+                    :title="displayLocationTitle">
+                    <template v-if="isResoniteExternalFriend">
+                        <img
+                            :src="resoniteProviderIconUrl"
+                            alt="Resonite"
+                            class="friend-card__provider-icon mr-1.5 size-4 flex-none" />
+                        <div class="friend-card__location flex w-full overflow-hidden wrap-break-word text-center">
+                            <span class="x-location__text w-full" v-html="renderedExternalLocation"></span>
+                        </div>
+                    </template>
                     <Location
+                        v-else
                         class="friend-card__location flex w-full overflow-hidden wrap-break-word text-center"
                         :location="friend.ref?.location"
                         :traveling="friend.ref?.travelingToLocation"
@@ -57,8 +67,12 @@
     import Location from '../../../components/Location.vue';
     import UserContextMenu from '../../../components/UserContextMenu.vue';
     import { showUserDialog } from '../../../coordinators/userCoordinator';
+    import { getResoniteSessionByHash } from '../../../services/resoniteRealtime';
+    import { renderResoniteRichText } from '../../../shared/utils/resoniteRichText';
+    import { formatResoniteWorldLabel } from '../../../shared/utils/resoniteWorldLabel';
 
     const { userImage, userStatusClass } = useUserDisplay();
+    const resoniteProviderIconUrl = '/images/resonite/resonite_color.svg';
 
     const props = defineProps({
         friend: {
@@ -90,6 +104,22 @@
     const statusDotClass = computed(() => {
         const status = userStatusClass(props.friend.ref, props.friend.pendingOffline);
 
+        if (status?.['resonite-online']) {
+            return 'friend-card__status-dot--resonite-online';
+        }
+        if (status?.['resonite-sociable']) {
+            return 'friend-card__status-dot--resonite-sociable';
+        }
+        if (status?.['resonite-away']) {
+            return 'friend-card__status-dot--resonite-away';
+        }
+        if (status?.['resonite-busy']) {
+            return 'friend-card__status-dot--resonite-busy';
+        }
+        if (status?.['resonite-invisible']) {
+            return 'friend-card__status-dot--resonite-invisible';
+        }
+
         if (status?.online) {
             return 'friend-card__status-dot--online';
         }
@@ -120,6 +150,51 @@
 
         return 'friend-card__status-dot--hidden';
     });
+
+    const isResoniteExternalFriend = computed(
+        () =>
+            props.friend?.isExternal === true ||
+            props.friend?.provider === 'resonite' ||
+            String(props.friend?.id || '').startsWith('resonite:')
+    );
+
+    const resoniteAccessLevel = computed(() => {
+        const sessionHash = String(
+            props.friend?.ref?.resonite?.currentSessionHash || props.friend?.resonite?.currentSessionHash || ''
+        ).trim();
+
+        return String(
+            props.friend?.ref?.resonite?.accessLevel ||
+                props.friend?.resonite?.accessLevel ||
+                getResoniteSessionByHash(sessionHash)?.accessLevel ||
+                ''
+        ).trim();
+    });
+
+    const externalLocationText = computed(() => {
+        if (!isResoniteExternalFriend.value) {
+            return '';
+        }
+
+        const baseLocation =
+            String(props.friend?.ref?.resonite?.locationName || '').trim() ||
+            String(props.friend?.ref?.resonite?.currentSessionName || '').trim() ||
+            String(props.friend?.ref?.location || '').trim();
+
+        if (!baseLocation || baseLocation === 'offline') {
+            return '';
+        }
+
+        if (baseLocation.toLowerCase() === 'private') {
+            return 'Private';
+        }
+
+        return formatResoniteWorldLabel(baseLocation, resoniteAccessLevel.value);
+    });
+
+    const renderedExternalLocation = computed(() => renderResoniteRichText(externalLocationText.value));
+
+    const displayLocationTitle = computed(() => externalLocationText.value || props.friend?.worldName || '');
 </script>
 
 <style scoped>
@@ -195,6 +270,38 @@
         background: var(--status-offline-card);
     }
 
+    .friend-card__status-dot--resonite-online,
+    .friend-card__status-dot--resonite-sociable,
+    .friend-card__status-dot--resonite-away,
+    .friend-card__status-dot--resonite-busy,
+    .friend-card__status-dot--resonite-invisible {
+        background-color: transparent;
+        background-position: center;
+        background-repeat: no-repeat;
+        background-size: contain;
+        box-shadow: none;
+    }
+
+    .friend-card__status-dot--resonite-online {
+        background-image: url('/images/resonite/presence_online.svg');
+    }
+
+    .friend-card__status-dot--resonite-sociable {
+        background-image: url('/images/resonite/presence_sociable.svg');
+    }
+
+    .friend-card__status-dot--resonite-away {
+        background-image: url('/images/resonite/presence_away.svg');
+    }
+
+    .friend-card__status-dot--resonite-busy {
+        background-image: url('/images/resonite/presence_busy.svg');
+    }
+
+    .friend-card__status-dot--resonite-invisible {
+        background-image: url('/images/resonite/presence_invisible.svg');
+    }
+
     .friend-card__body {
         gap: calc(8px * var(--card-scale) * var(--card-spacing));
     }
@@ -231,6 +338,11 @@
     .friend-card__location {
         max-height: calc(36px * var(--card-scale));
         white-space: normal;
+    }
+
+    .friend-card__provider-icon {
+        align-self: flex-start;
+        margin-top: calc(1px * var(--card-scale));
     }
 
     .friend-card__location :deep(.x-location__text) {

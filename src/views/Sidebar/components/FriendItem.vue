@@ -1,8 +1,8 @@
 <template>
     <div
         class="box-border flex items-center p-1.5 text-[13px] cursor-pointer hover:bg-muted/50 hover:rounded-lg"
-        @click="showUserDialog(friend.id)">
-        <template v-if="friend.ref">
+        @click="handleClick">
+        <template v-if="friend?.ref">
             <div class="relative inline-block flex-none size-9 mr-2.5" :class="friendStatusClass">
                 <Avatar class="size-full rounded-full">
                     <AvatarImage :src="userImage(friend.ref, true)" class="object-cover" />
@@ -65,7 +65,7 @@
                 </template>
             </div>
         </template>
-        <template v-else-if="!friend.ref && !isRefreshFriendsLoading">
+        <template v-else-if="friend && !friend.ref && !isRefreshFriendsLoading">
             <span>{{ friend.name || friend.id }}</span>
             <Button size="sm" variant="ghost" class="mr-1 w-6 h-6 text-xs" @click.stop="confirmDeleteFriend(friend.id)"
                 ><Trash2 class="h-4 w-4" />
@@ -97,7 +97,7 @@
     import { confirmDeleteFriend } from '../../../coordinators/friendRelationshipCoordinator';
 
     const props = defineProps({
-        friend: { type: Object, required: true },
+        friend: { type: Object, default: null },
         isGroupByInstance: Boolean
     });
 
@@ -107,11 +107,19 @@
 
     const { t } = useI18n();
 
-    const isFriendTraveling = computed(() => props.friend.ref?.location === 'traveling');
-    const isFriendActiveOrOffline = computed(() => props.friend.state === 'active' || props.friend.state === 'offline');
+    function handleClick() {
+        if (props.friend?.id) {
+            showUserDialog(props.friend.id);
+        }
+    }
+
+    const isFriendTraveling = computed(() => props.friend?.ref?.location === 'traveling');
+    const isFriendActiveOrOffline = computed(
+        () => props.friend?.state === 'active' || props.friend?.state === 'offline'
+    );
 
     const friendStatusClass = computed(() => {
-        return userStatusClass(props.friend.ref, props.friend.pendingOffline);
+        return userStatusClass(props.friend?.ref, props.friend?.pendingOffline);
     });
 
     function formatResonitePresenceLocation(location) {
@@ -126,11 +134,11 @@
         }
 
         const sessionHash = String(
-            props.friend.ref?.resonite?.currentSessionHash || props.friend.resonite?.currentSessionHash || ''
+            props.friend?.ref?.resonite?.currentSessionHash || props.friend?.resonite?.currentSessionHash || ''
         ).trim();
         const accessLevel = String(
-            props.friend.ref?.resonite?.accessLevel ||
-                props.friend.resonite?.accessLevel ||
+            props.friend?.ref?.resonite?.accessLevel ||
+                props.friend?.resonite?.accessLevel ||
                 getResoniteSessionByHash(sessionHash)?.accessLevel ||
                 ''
         ).trim();
@@ -139,25 +147,25 @@
     }
 
     const externalPresenceLine = computed(() => {
-        const traveling = formatResonitePresenceLocation(String(props.friend.ref?.traveling || '').trim());
-        const rawLocation = String(props.friend.ref?.location || '').trim();
+        const traveling = formatResonitePresenceLocation(String(props.friend?.ref?.traveling || '').trim());
+        const rawLocation = String(props.friend?.ref?.location || '').trim();
         // 'offline' is a sentinel from contacts-only payloads — don't display it as a world name
         const location = rawLocation !== 'offline' ? formatResonitePresenceLocation(rawLocation) : '';
-        const statusDescription = String(props.friend.ref?.statusDescription || '').trim();
-        const provider = String(props.friend.provider || 'external').trim();
+        const statusDescription = String(props.friend?.ref?.statusDescription || '').trim();
+        const provider = String(props.friend?.provider || 'external').trim();
 
         return traveling || location || statusDescription || '';
     });
 
     const epoch = computed(() =>
-        isFriendTraveling.value ? props.friend.ref?.$travelingToTime : props.friend.ref?.$location_at
+        isFriendTraveling.value ? props.friend?.ref?.$travelingToTime : props.friend?.ref?.$location_at
     );
 
-    const locationProp = computed(() => props.friend.ref?.location || '');
-    const travelingProp = computed(() => props.friend.ref?.travelingToLocation || '');
+    const locationProp = computed(() => props.friend?.ref?.location || '');
+    const travelingProp = computed(() => props.friend?.ref?.travelingToLocation || '');
 
     // For Resonite (external) friends render colour tags; for others just escape the text.
     const renderedExternalPresenceLine = computed(() =>
-        props.friend.isExternal ? renderResoniteRichText(externalPresenceLine.value) : externalPresenceLine.value
+        props.friend?.isExternal ? renderResoniteRichText(externalPresenceLine.value) : externalPresenceLine.value
     );
 </script>

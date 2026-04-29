@@ -279,6 +279,52 @@ describe('User Utils', () => {
             ).toBeNull();
         });
 
+        test('returns presence style for external Resonite users even without isFriend', () => {
+            const result = userStatusClass(
+                {
+                    id: 'resonite:U-other',
+                    isExternal: true,
+                    status: 'active',
+                    location: 'Soft Sea of Stars',
+                    state: 'online',
+                    resonite: {
+                        onlineStatus: 'online'
+                    }
+                },
+                false,
+                currentUser
+            );
+
+            expect(result).toMatchObject({
+                'status-icon': true,
+                online: true,
+                'resonite-online': true
+            });
+        });
+
+        test('keeps invisible Resonite users distinct from the default offline indicator', () => {
+            const result = userStatusClass(
+                {
+                    id: 'resonite:U-invisible',
+                    isExternal: true,
+                    status: '',
+                    location: 'offline',
+                    state: 'offline',
+                    resonite: {
+                        onlineStatus: 'invisible'
+                    }
+                },
+                false,
+                currentUser
+            );
+
+            expect(result).toMatchObject({
+                'status-icon': true,
+                offline: true,
+                'resonite-invisible': true
+            });
+        });
+
         test('returns offline style for pending offline friend', () => {
             const result = userStatusClass(
                 { id: 'usr_other', isFriend: true, status: 'active' },

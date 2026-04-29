@@ -180,6 +180,108 @@ describe('gameLog.getUserStats', () => {
         );
     });
 
+    test('uses only shared-session overlap windows for Resonite shared encounter stats', async () => {
+        mocks.execute.mockImplementation(async (callback, sql, params) => {
+            if (
+                !sql.includes('_feed_online_offline') ||
+                !sql.includes('_feed_gps') ||
+                !sql.includes('ORDER BY created_at ASC')
+            ) {
+                return;
+            }
+
+            if (params?.['@userId'] === 'resonite:U-target') {
+                callback([
+                    '2026-04-22T06:00:00.000Z',
+                    Date.parse('2026-04-22T06:00:00.000Z'),
+                    'Zen Garden',
+                    1_800_000,
+                    null,
+                    'Online'
+                ]);
+                callback([
+                    '2026-04-22T06:30:00.000Z',
+                    Date.parse('2026-04-22T06:30:00.000Z'),
+                    'Zen Garden',
+                    1_800_000,
+                    null,
+                    'Offline'
+                ]);
+                callback([
+                    '2026-04-22T07:00:00.000Z',
+                    Date.parse('2026-04-22T07:00:00.000Z'),
+                    'Another World',
+                    1_200_000,
+                    null,
+                    'Online'
+                ]);
+                callback([
+                    '2026-04-22T07:20:00.000Z',
+                    Date.parse('2026-04-22T07:20:00.000Z'),
+                    'Another World',
+                    1_200_000,
+                    null,
+                    'Offline'
+                ]);
+                return;
+            }
+
+            if (params?.['@userId'] === 'resonite:U-self') {
+                callback([
+                    '2026-04-22T06:10:00.000Z',
+                    Date.parse('2026-04-22T06:10:00.000Z'),
+                    'Zen Garden',
+                    600_000,
+                    null,
+                    'Online'
+                ]);
+                callback([
+                    '2026-04-22T06:20:00.000Z',
+                    Date.parse('2026-04-22T06:20:00.000Z'),
+                    'Zen Garden',
+                    600_000,
+                    null,
+                    'Offline'
+                ]);
+                callback([
+                    '2026-04-22T07:05:00.000Z',
+                    Date.parse('2026-04-22T07:05:00.000Z'),
+                    'Elsewhere',
+                    300_000,
+                    null,
+                    'Online'
+                ]);
+                callback([
+                    '2026-04-22T07:10:00.000Z',
+                    Date.parse('2026-04-22T07:10:00.000Z'),
+                    'Elsewhere',
+                    300_000,
+                    null,
+                    'Offline'
+                ]);
+            }
+        });
+
+        const result = await gameLog.getUserStats(
+            {
+                id: 'resonite:U-target',
+                displayName: 'Target User',
+                sharedOnly: true,
+                sharedWithUserId: 'resonite:U-self'
+            },
+            false
+        );
+
+        expect(result).toEqual({
+            timeSpent: 600_000,
+            lastSeen: '2026-04-22T06:20:00.000Z',
+            joinCount: 1,
+            userId: 'resonite:U-target',
+            previousDisplayNames: new Map()
+        });
+        expect(mocks.execute).toHaveBeenCalledTimes(2);
+    });
+
     test('includes feed-backed stats for Resonite users in bulk lookups', async () => {
         mocks.execute.mockImplementation(async (callback, sql) => {
             if (sql.includes('ORDER BY user_id ASC, created_at DESC')) {

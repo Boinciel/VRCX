@@ -701,6 +701,12 @@ describe('resoniteFriends service', () => {
                 isVerified: true,
                 tags: ['new-tag'],
                 profile: {
+                    displayBadges: [
+                        {
+                            id: 'badge-probe',
+                            uri: 'resdb:///badge-probe.png'
+                        }
+                    ],
                     iconUrl:
                         'resdb:///6683441e7234417d08e9d7228f59afc55bac656ad8b1833f34a8105644a49754.webp',
                     tagline: 'New tagline',
@@ -715,6 +721,12 @@ describe('resoniteFriends service', () => {
             );
             expect(merged.resonite.isVerified).toBe(true);
             expect(merged.resonite.tags).toEqual(['new-tag']);
+            expect(merged.resonite.profile.displayBadges).toEqual([
+                {
+                    id: 'badge-probe',
+                    uri: 'resdb:///badge-probe.png'
+                }
+            ]);
             expect(merged.resonite.profile.tagline).toBe('New tagline');
             expect(merged.resonite.profile.description).toBe('New description');
             expect(merged.resonite.profile.iconUrl).toBe(
@@ -734,6 +746,20 @@ describe('resoniteFriends service', () => {
                     winner: 'incoming',
                     reason: 'fetched-profile-authoritative',
                     selectedValue: 'New tagline'
+                })
+            );
+            expect(
+                merged.resonite.mergeTrace.profile['profile.displayBadges']
+            ).toEqual(
+                expect.objectContaining({
+                    winner: 'incoming',
+                    reason: 'fetched-profile-authoritative',
+                    selectedValue: [
+                        {
+                            id: 'badge-probe',
+                            uri: 'resdb:///badge-probe.png'
+                        }
+                    ]
                 })
             );
         });
@@ -930,6 +956,56 @@ describe('resoniteFriends service', () => {
             expect(result.resonite.sessionType).toBe('Headless');
             expect(result.resonite.userSessionId).toBe('S-123');
             expect(result.resonite.profile.description).toBe('Testing profile');
+        });
+
+        test('does not synthesize userSessionId from current session identifiers', () => {
+            const entry = {
+                id: 'U-sessionless-user-session',
+                contactUsername: 'Sessionless',
+                currentSession: {
+                    id: 'S-world-id',
+                    sessionId: 'S-world-session',
+                    name: 'Headless Workshop'
+                },
+                sessions: [
+                    {
+                        sessionHash: 'S-world-hash'
+                    }
+                ]
+            };
+
+            const result = normalizeResoniteFriend(entry);
+
+            expect(result.state).toBe('online');
+            expect(result.resonite.userSessionId).toBe('');
+            expect(result.resonite.locationName).toBe('Headless Workshop');
+        });
+
+        test('treats status-less session presence metadata as online', () => {
+            const entry = {
+                id: 'U-headless-123',
+                contactUsername: 'HeadlessFriend',
+                userStatus: {
+                    sessionType: 'Headless',
+                    currentSessionIndex: 0,
+                    sessions: [
+                        {
+                            sessionHash: 'S-headless-hash'
+                        }
+                    ]
+                },
+                currentSession: {
+                    name: 'Quiet Headless World'
+                }
+            };
+
+            const result = normalizeResoniteFriend(entry);
+
+            expect(result.state).toBe('online');
+            expect(result.ref.status).toBe('active');
+            expect(result.ref.location).toBe('Quiet Headless World');
+            expect(result.resonite.sessionType).toBe('Headless');
+            expect(result.resonite.onlineStatus).toBe('');
         });
 
         test('converts Resonite resdb profile icons into assets URLs', () => {

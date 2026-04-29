@@ -144,7 +144,13 @@
 
                             <template v-else-if="item.row.type === 'resonite-instance-header'">
                                 <div class="mb-1 flex items-center">
-                                    <span class="inline text-xs truncate">{{ item.row.sessionName }}</span>
+                                    <img
+                                        :src="resoniteProviderIconUrl"
+                                        alt="Resonite"
+                                        class="mr-1.5 size-3 flex-none" />
+                                    <span
+                                        class="inline text-xs truncate"
+                                        v-html="renderResoniteRichText(item.row.sessionName)"></span>
                                     <span class="text-xs ml-1.5 flex-none">{{ `(${item.row.count})` }}</span>
                                 </div>
                             </template>
@@ -259,6 +265,10 @@
     import { useUserDisplay } from '../../../composables/useUserDisplay';
     import { getFriendsLocations } from '../../../shared/utils/location.js';
     import { parseLocation } from '../../../shared/utils';
+    import { getResoniteCurrentSessionHash, getResoniteSessionGroupingKey } from '../../../shared/utils/resonite';
+    import { renderResoniteRichText } from '../../../shared/utils/resoniteRichText';
+    import { formatResoniteWorldLabel } from '../../../shared/utils/resoniteWorldLabel';
+    import { getResoniteSessionByHash } from '../../../services/resoniteRealtime';
 
     import BackToTop from '../../../components/BackToTop.vue';
     import FriendItem from './FriendItem.vue';
@@ -302,6 +312,7 @@
     const { currentUser } = storeToRefs(useUserStore());
     const { checkCanInvite, checkCanInviteSelf } = useInviteChecks();
     const { userImage, userStatusClass } = useUserDisplay();
+    const resoniteProviderIconUrl = '/images/resonite/resonite_color.svg';
     const { presets: statusPresets, getStatusClass: presetStatusClass } = useStatusPresets();
 
     const meResoniteRow = computed(() => {
@@ -370,6 +381,13 @@
                     isRealInstance(friend.ref?.$location?.tag) ||
                     Boolean(lastLocation.value?.friendList?.has(friend.id))
                 ) {
+                    ids.add(friend.id);
+                }
+            }
+        }
+        for (const item of resoniteFriendsInSameSession.value) {
+            for (const friend of item) {
+                if (friend?.id) {
                     ids.add(friend.id);
                 }
             }
@@ -593,15 +611,30 @@
 
             resoniteFriendsInSameSession.value.forEach((friendArr, groupIndex) => {
                 if (!friendArr || !friendArr.length) return;
-                const sessionHash = friendArr[0]?.resonite?.currentSessionHash ?? `resonite-group-${groupIndex}`;
-                const sessionName =
-                    friendArr[0]?.resonite?.currentSessionName || friendArr[0]?.resonite?.locationName || sessionHash;
+                const currentSessionHash = getResoniteCurrentSessionHash(friendArr[0]);
+                const resolvedSession = currentSessionHash ? getResoniteSessionByHash(currentSessionHash) : null;
+                const sessionGroupKey =
+                    getResoniteSessionGroupingKey(friendArr[0], resolvedSession) || `resonite-group-${groupIndex}`;
+                const sessionName = formatResoniteWorldLabel(
+                    friendArr[0]?.resonite?.currentSessionName ||
+                        friendArr[0]?.resonite?.locationName ||
+                        currentSessionHash ||
+                        sessionGroupKey,
+                    resolvedSession?.accessLevel ||
+                        friendArr[0]?.ref?.resonite?.accessLevel ||
+                        friendArr[0]?.resonite?.accessLevel ||
+                        ''
+                );
                 rows.push(
-                    buildResoniteInstanceHeaderRow(sessionName, friendArr.length, `resonite-instance:${sessionHash}`)
+                    buildResoniteInstanceHeaderRow(
+                        sessionName,
+                        friendArr.length,
+                        `resonite-instance:${sessionGroupKey}`
+                    )
                 );
                 friendArr.forEach((friend, idx) => {
                     rows.push(
-                        buildFriendRow(friend, `resonite-instance:${sessionHash}:${friend?.id ?? idx}`, {
+                        buildFriendRow(friend, `resonite-instance:${sessionGroupKey}:${friend?.id ?? idx}`, {
                             isGroupByInstance: true,
                             paddingBottom: idx === friendArr.length - 1 ? 5 : undefined,
                             itemStyle: idx === friendArr.length - 1 ? { marginBottom: '6px' } : undefined

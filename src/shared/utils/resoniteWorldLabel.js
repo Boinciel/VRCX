@@ -10,8 +10,8 @@ export function getResoniteAccessLevelLabel(accessLevel) {
         'contacts only': 'Contacts only',
         contactsplus: 'Contacts+',
         'contacts+': 'Contacts+',
-        registeredusers: 'Registered users',
-        'registered users': 'Registered users',
+        registeredusers: 'Registered',
+        'registered users': 'Registered',
         anyone: 'Public',
         public: 'Public'
     };
@@ -31,6 +31,12 @@ export function formatResoniteWorldLabel(worldName, accessLevel) {
         !accessSuffix ||
         baseWorldName.toLowerCase() === accessSuffix.toLowerCase()
     ) {
+        return baseWorldName;
+    }
+
+    const normalizedBaseWorldName = baseWorldName.toLowerCase();
+    const normalizedAccessSuffix = accessSuffix.toLowerCase();
+    if (normalizedBaseWorldName.endsWith(` - ${normalizedAccessSuffix}`)) {
         return baseWorldName;
     }
 

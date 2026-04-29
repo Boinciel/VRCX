@@ -85,6 +85,15 @@ import {
     stopResoniteRealtimePresence
 } from '../resoniteRealtime';
 
+async function sha256UpperHex(value) {
+    const encoded = new TextEncoder().encode(String(value));
+    const digest = await crypto.subtle.digest('SHA-256', encoded);
+    return Array.from(new Uint8Array(digest))
+        .map((byte) => byte.toString(16).padStart(2, '0'))
+        .join('')
+        .toUpperCase();
+}
+
 describe('resoniteRealtime service', () => {
     beforeEach(async () => {
         vi.clearAllMocks();
@@ -191,10 +200,155 @@ describe('resoniteRealtime service', () => {
         });
     });
 
-    test('buildMergedPresence treats sparse SignalR updates as offline and clears stale session fields', () => {
+    test('refreshResoniteSessionByHash caches the nested session node from wrapped payloads', async () => {
+        mockWebApiExecute.mockResolvedValue({
+            status: 200,
+            data: JSON.stringify({
+                sessionHash: 'S-hash',
+                name: 'Wrapper Title',
+                session: {
+                    sessionHash: 'S-hash',
+                    sessionId: 'S-public',
+                    name: 'Soft Sea of Stars',
+                    joinedUsers: 2,
+                    sessionUsers: [
+                        {
+                            userID: 'U-host',
+                            username: 'HostUser',
+                            isPresent: true
+                        },
+                        {
+                            userID: 'U-other',
+                            username: 'OtherUser',
+                            isPresent: true
+                        }
+                    ]
+                }
+            })
+        });
+
+        const result = await refreshResoniteSessionByHash({
+            sessionHash: 'S-hash',
+            apiKey: 'U-test:session-token',
+            force: true
+        });
+
+        expect(result).toMatchObject({
+            sessionId: 'S-public',
+            name: 'Soft Sea of Stars',
+            joinedUsers: 2,
+            sessionUsers: [
+                { userID: 'U-host', username: 'HostUser', isPresent: true },
+                { userID: 'U-other', username: 'OtherUser', isPresent: true }
+            ]
+        });
+        expect(getResoniteSessionByHash('S-hash')).toMatchObject({
+            sessionId: 'S-public',
+            name: 'Soft Sea of Stars',
+            joinedUsers: 2,
+            sessionUsers: [
+                { userID: 'U-host', username: 'HostUser', isPresent: true },
+                { userID: 'U-other', username: 'OtherUser', isPresent: true }
+            ]
+        });
+    });
+
+    test('refreshResoniteSessionByHash falls back to host sessions when direct hash lookup misses', async () => {
+        mockWebApiExecute
+            .mockResolvedValueOnce({
+                status: 404,
+                data: ''
+            })
+            .mockResolvedValueOnce({
+                status: 200,
+                data: JSON.stringify([
+                    {
+                        sessionHash: 'S-hash',
+                        sessionId: 'S-public',
+                        name: 'Soft Sea of Stars',
+                        hostUserId: 'U-host',
+                        sessionUsers: [
+                            {
+                                userID: 'U-host',
+                                username: 'HostUser',
+                                isPresent: true
+                            }
+                        ]
+                    }
+                ])
+            });
+
+        const result = await refreshResoniteSessionByHash({
+            sessionHash: 'S-hash',
+            userId: 'resonite:U-host',
+            apiKey: 'U-test:session-token',
+            force: true
+        });
+
+        expect(result).toMatchObject({
+            sessionHash: 'S-hash',
+            sessionId: 'S-public',
+            name: 'Soft Sea of Stars'
+        });
+        expect(mockWebApiExecute).toHaveBeenCalledTimes(2);
+        expect(getResoniteSessionByHash('S-hash')).toMatchObject({
+            sessionHash: 'S-hash',
+            sessionId: 'S-public',
+            name: 'Soft Sea of Stars'
+        });
+    });
+
+    test('buildMergedPresence preserves prior session identity for sparse SignalR status updates', () => {
         const merged = buildMergedPresence(
             'U-test',
             { userId: 'U-test' },
+            {
+                onlineStatus: 'online',
+                locationName: 'Soft Sea of Stars',
+                currentSessionName: 'Soft Sea of Stars',
+                currentSessionHash: 'S-hash'
+            },
+            'ReceiveStatusUpdate'
+        );
+
+        expect(merged.onlineStatus).toBe('online');
+        expect(merged.locationName).toBe('Soft Sea of Stars');
+        expect(merged.currentSessionName).toBe('Soft Sea of Stars');
+        expect(merged.currentSessionHash).toBe('S-hash');
+    });
+
+    test('buildMergedPresence clears stale carried-forward names when a sparse status update points at a new session hash', () => {
+        const merged = buildMergedPresence(
+            'U-test',
+            {
+                userId: 'U-test',
+                onlineStatus: 'online',
+                currentSessionIndex: 0,
+                sessions: [
+                    {
+                        sessionHash: 'S-new'
+                    }
+                ]
+            },
+            {
+                onlineStatus: 'online',
+                locationName: 'Soft Sea of Stars',
+                currentSessionName: 'Soft Sea of Stars',
+                currentSessionHash: 'S-old'
+            },
+            'ReceiveStatusUpdate'
+        );
+
+        expect(merged.onlineStatus).toBe('online');
+        expect(merged.locationName).toBe('');
+        expect(merged.currentSessionName).toBe('');
+        expect(merged.currentSessionHash).toBe('S-new');
+    });
+
+    test('buildMergedPresence still clears stale session fields for explicit offline status updates', () => {
+        const merged = buildMergedPresence(
+            'U-test',
+            { userId: 'U-test', onlineStatus: 'offline' },
             {
                 onlineStatus: 'online',
                 locationName: 'Soft Sea of Stars',
@@ -291,6 +445,92 @@ describe('resoniteRealtime service', () => {
         expect(merged[0].resonite.currentSessionName).toBe(
             "Cat's Cradle Collectable Card Shop"
         );
+    });
+
+    test('ReceiveSessionUpdate preserves richer cached session metadata when the live update is sparse', async () => {
+        mockWebApiExecute.mockResolvedValue({
+            status: 200,
+            data: JSON.stringify({
+                sessionHash: 'S-rich',
+                sessionId: 'session-stable-123',
+                name: 'Soft Sea of Stars',
+                broadcastKey: 'U-bokcine:shared-world',
+                accessLevel: 'RegisteredUsers',
+                sessionUsers: [
+                    {
+                        userID: 'U-bokcine',
+                        username: 'bokcine'
+                    },
+                    {
+                        userID: 'U-vilhelm',
+                        username: 'Vilhelm'
+                    }
+                ]
+            })
+        });
+
+        await refreshResoniteSessionByHash({
+            sessionHash: 'S-rich',
+            apiKey: 'U-test:session-token',
+            force: true
+        });
+
+        mockSignalRInvoke.mockImplementation(async (methodName) => {
+            if (methodName === 'InitializeStatus') {
+                return {
+                    contacts: [
+                        {
+                            id: 'U-bokcine',
+                            userStatus: {
+                                onlineStatus: 'online',
+                                locationName: 'Soft Sea of Stars',
+                                currentSessionName: 'Soft Sea of Stars',
+                                currentSessionIndex: 0,
+                                sessions: [
+                                    {
+                                        sessionHash: 'S-rich',
+                                        broadcastKey: 'U-bokcine:shared-world',
+                                        accessLevel: 'RegisteredUsers'
+                                    }
+                                ]
+                            }
+                        }
+                    ]
+                };
+            }
+
+            return true;
+        });
+
+        await ensureResoniteRealtimePresence({
+            enabled: true,
+            apiKey: 'U-test:session-token',
+            contactUserIds: ['U-bokcine'],
+            persistenceKey: 'test-user'
+        });
+
+        await signalRHandlers.ReceiveSessionUpdate({
+            broadcastKey: 'U-bokcine:shared-world',
+            name: 'Cherry blossom cozy\n-벚꽃 쉼터-'
+        });
+
+        expect(getResoniteSessionByHash('S-rich')).toMatchObject({
+            sessionHash: 'S-rich',
+            sessionId: 'session-stable-123',
+            broadcastKey: 'U-bokcine:shared-world',
+            accessLevel: 'RegisteredUsers',
+            sessionUsers: [
+                expect.objectContaining({
+                    userID: 'U-bokcine',
+                    username: 'bokcine'
+                }),
+                expect.objectContaining({
+                    userID: 'U-vilhelm',
+                    username: 'Vilhelm'
+                })
+            ],
+            name: 'Cherry blossom cozy\n-벚꽃 쉼터-'
+        });
     });
 
     test('ReceiveSessionUpdate ignores inactive cached sessions for the same user', async () => {
@@ -473,6 +713,251 @@ describe('resoniteRealtime service', () => {
         expect(merged[0].resonite.currentSessionName).toBe('keyemail World');
     });
 
+    test('resolved public session names overwrite synthetic private placeholders', async () => {
+        mockWebApiExecute.mockResolvedValue({
+            status: 200,
+            data: JSON.stringify({
+                sessionHash: 'S-public',
+                name: 'Cherry blossom cozy -벚꽃 쉼터-',
+                accessLevel: 'anyone'
+            })
+        });
+
+        mockSignalRInvoke.mockImplementation(async (methodName) => {
+            if (methodName === 'InitializeStatus') {
+                return {
+                    contacts: [
+                        {
+                            id: 'U-element',
+                            userStatus: {
+                                onlineStatus: 'online',
+                                currentSessionHash: 'S-public',
+                                currentSessionIndex: 0,
+                                sessions: [
+                                    {
+                                        accessLevel: 'private',
+                                        sessionHash: 'S-public'
+                                    }
+                                ]
+                            }
+                        }
+                    ]
+                };
+            }
+
+            return true;
+        });
+
+        await ensureResoniteRealtimePresence({
+            enabled: true,
+            apiKey: 'U-test:session-token',
+            contactUserIds: ['U-element'],
+            persistenceKey: 'test-user'
+        });
+
+        await Promise.resolve();
+        await Promise.resolve();
+
+        const merged = mergeResoniteRealtimePresence([
+            {
+                id: 'resonite:U-element',
+                name: 'Element',
+                state: 'online',
+                status: 'active',
+                provider: 'resonite',
+                isExternal: true,
+                ref: {
+                    id: 'resonite:U-element',
+                    displayName: 'Element',
+                    state: 'online',
+                    status: 'active',
+                    location: 'private',
+                    traveling: 'Private',
+                    statusDescription: '',
+                    resonite: {
+                        locationName: 'Private',
+                        currentSessionName: 'Private',
+                        currentSessionHash: 'S-public',
+                        accessLevel: 'private'
+                    }
+                },
+                resonite: {
+                    onlineStatus: 'online',
+                    locationName: 'Private',
+                    currentSessionName: 'Private',
+                    currentSessionHash: 'S-public',
+                    accessLevel: 'private'
+                }
+            }
+        ]);
+
+        expect(merged).toHaveLength(1);
+        expect(getResoniteSessionByHash('S-public')).toMatchObject({
+            sessionHash: 'S-public',
+            name: 'Cherry blossom cozy -벚꽃 쉼터-',
+            accessLevel: 'anyone'
+        });
+        expect(merged[0].ref.location).toBe(
+            'Cherry blossom cozy -벚꽃 쉼터- - Public'
+        );
+        expect(merged[0].ref.traveling).toBe(
+            'Cherry blossom cozy -벚꽃 쉼터- - Public'
+        );
+        expect(merged[0].resonite.locationName).toBe(
+            'Cherry blossom cozy -벚꽃 쉼터- - Public'
+        );
+        expect(merged[0].resonite.currentSessionName).toBe(
+            'Cherry blossom cozy -벚꽃 쉼터- - Public'
+        );
+        expect(merged[0].resonite.accessLevel).toBe('anyone');
+    });
+
+    test('host session lookup ignores generic hostless session payloads', async () => {
+        const targetHash = await sha256UpperHex('room-1salt-123');
+
+        mockSignalRInvoke.mockImplementation(async (methodName) => {
+            if (methodName === 'InitializeStatus') {
+                return {
+                    contacts: [
+                        {
+                            id: 'U-hostlookup',
+                            userStatus: {
+                                onlineStatus: 'online',
+                                currentSessionHash: targetHash,
+                                currentSessionIndex: 0,
+                                hashSalt: 'salt-123',
+                                sessions: [
+                                    {
+                                        accessLevel: 'private',
+                                        sessionHash: targetHash
+                                    }
+                                ]
+                            }
+                        }
+                    ]
+                };
+            }
+
+            return true;
+        });
+
+        mockWebApiExecute.mockImplementation(async ({ url }) => {
+            if (url.includes('hostId=U-hostlookup')) {
+                return {
+                    status: 200,
+                    data: JSON.stringify([
+                        {
+                            sessionId: 'room-1',
+                            name: 'Wrong Hostless World'
+                        }
+                    ])
+                };
+            }
+
+            if (url.includes('hostUserId=U-hostlookup')) {
+                return {
+                    status: 200,
+                    data: JSON.stringify([
+                        {
+                            sessionId: 'room-1',
+                            name: 'Wrong Hostless World'
+                        }
+                    ])
+                };
+            }
+
+            if (
+                url.includes(
+                    '/sessions?includeEmptyHeadless=true&includeEnded=false&minActiveUsers=0'
+                )
+            ) {
+                return {
+                    status: 200,
+                    data: JSON.stringify([])
+                };
+            }
+
+            if (
+                url.includes(
+                    '/sessions?includeEmptyHeadless=true&includeEnded=true&minActiveUsers=0'
+                )
+            ) {
+                return {
+                    status: 200,
+                    data: JSON.stringify([
+                        {
+                            sessionId: 'room-1',
+                            name: 'Wrong Hostless World'
+                        }
+                    ])
+                };
+            }
+
+            if (url.includes(`/sessions/${targetHash}`)) {
+                return {
+                    status: 404,
+                    data: ''
+                };
+            }
+
+            return {
+                status: 404,
+                data: ''
+            };
+        });
+
+        await ensureResoniteRealtimePresence({
+            enabled: true,
+            apiKey: 'U-test:session-token',
+            contactUserIds: ['U-hostlookup'],
+            persistenceKey: 'test-user'
+        });
+
+        await Promise.resolve();
+        await Promise.resolve();
+
+        const merged = mergeResoniteRealtimePresence([
+            {
+                id: 'resonite:U-hostlookup',
+                name: 'Host Lookup User',
+                state: 'online',
+                status: 'active',
+                provider: 'resonite',
+                isExternal: true,
+                ref: {
+                    id: 'resonite:U-hostlookup',
+                    displayName: 'Host Lookup User',
+                    state: 'online',
+                    status: 'active',
+                    location: 'Private',
+                    traveling: 'Private',
+                    statusDescription: '',
+                    resonite: {
+                        locationName: 'Private',
+                        currentSessionName: 'Private',
+                        currentSessionHash: targetHash,
+                        hashSalt: 'salt-123',
+                        accessLevel: 'private'
+                    }
+                },
+                resonite: {
+                    onlineStatus: 'online',
+                    locationName: 'Private',
+                    currentSessionName: 'Private',
+                    currentSessionHash: targetHash,
+                    hashSalt: 'salt-123',
+                    accessLevel: 'private'
+                }
+            }
+        ]);
+
+        expect(merged).toHaveLength(1);
+        expect(merged[0].ref.location).toBe('Private');
+        expect(merged[0].ref.traveling).toBe('Private');
+        expect(merged[0].resonite.currentSessionName).toBe('Private');
+        expect(getResoniteSessionByHash(targetHash)).toBeNull();
+    });
+
     test('buildMergedPresence prefers Private over stale session names when access level is private', () => {
         const merged = buildMergedPresence(
             'U-private',
@@ -631,6 +1116,72 @@ describe('resoniteRealtime service', () => {
         expect(merged[0].state).toBe('offline');
         expect(merged[0].ref.location).toBe('offline');
         expect(merged[0].resonite.currentSessionHash || '').toBe('');
+    });
+
+    test('contacts-only offline snapshots do not prune active realtime presence before merge', async () => {
+        mockDatabase.getResoniteCachedPresence.mockResolvedValue([
+            {
+                resoniteUserId: 'U-contacts-only',
+                onlineStatus: 'online',
+                locationName: 'Soft Sea of Stars',
+                currentSessionHash: 'S-live',
+                currentSessionName: 'Soft Sea of Stars',
+                observedAt: 100,
+                expiresAt: Date.now() + 60_000,
+                source: 'ReceiveSessionUpdate',
+                payload: {
+                    userId: 'U-contacts-only',
+                    onlineStatus: 'online',
+                    locationName: 'Soft Sea of Stars',
+                    currentSessionHash: 'S-live',
+                    currentSessionName: 'Soft Sea of Stars',
+                    sessions: [],
+                    updatedAt: 100,
+                    sourceEvent: 'ReceiveSessionUpdate'
+                }
+            }
+        ]);
+
+        await hydratePersistedResoniteRealtimeState('test-user');
+
+        const contactsOnlySnapshot = [
+            {
+                id: 'resonite:U-contacts-only',
+                name: 'Contacts Only User',
+                state: 'offline',
+                status: '',
+                provider: 'resonite',
+                isExternal: true,
+                ref: {
+                    id: 'resonite:U-contacts-only',
+                    displayName: 'Contacts Only User',
+                    state: 'offline',
+                    location: 'offline',
+                    traveling: '',
+                    resonite: {
+                        hasPresenceSignals: false,
+                        contactObservedAt: 200
+                    }
+                },
+                resonite: {
+                    hasPresenceSignals: false,
+                    onlineStatus: '',
+                    contactObservedAt: 200,
+                    locationName: '',
+                    currentSessionHash: '',
+                    currentSessionName: ''
+                }
+            }
+        ];
+
+        expect(
+            reconcileResoniteRealtimeAgainstSnapshot(contactsOnlySnapshot)
+        ).toBe(0);
+
+        const merged = mergeResoniteRealtimePresence(contactsOnlySnapshot);
+        expect(merged[0].state).toBe('online');
+        expect(merged[0].ref.location).toBe('Soft Sea of Stars');
+        expect(merged[0].resonite.currentSessionHash).toBe('S-live');
     });
 
     test('snapshot session fields outrank resolved-name cache during merge', async () => {

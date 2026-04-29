@@ -46,7 +46,15 @@
                                 </ToggleGroupItem>
                             </TooltipWrapper>
                         </ToggleGroup>
-                        <Location :location="location.tag" class="text-sm" />
+                        <span
+                            v-if="previousInstancesInfoDialog.provider === 'resonite'"
+                            class="text-sm"
+                            v-html="
+                                renderResoniteRichText(
+                                    previousInstancesInfoDialog.displayLabel || previousInstancesInfoDialog.instanceId
+                                )
+                            " />
+                        <Location v-else :location="location.tag" class="text-sm" />
                     </div>
                     <InputGroupField
                         v-model="search"
@@ -88,7 +96,15 @@
                             </ToggleGroupItem>
                         </TooltipWrapper>
                     </ToggleGroup>
-                    <Location :location="location.tag" class="text-sm" />
+                    <span
+                        v-if="previousInstancesInfoDialog.provider === 'resonite'"
+                        class="text-sm"
+                        v-html="
+                            renderResoniteRichText(
+                                previousInstancesInfoDialog.displayLabel || previousInstancesInfoDialog.instanceId
+                            )
+                        " />
+                    <Location v-else :location="location.tag" class="text-sm" />
                 </div>
             </div>
             <div class="flex-1 overflow-auto min-h-0">
@@ -120,6 +136,7 @@
     import { database } from '../../../services/database';
     import { useVrcxVueTable } from '../../../lib/table/useVrcxVueTable';
     import { lookupUser } from '../../../coordinators/userCoordinator';
+    import { renderResoniteRichText } from '../../../shared/utils/resoniteRichText';
 
     import PreviousInstancesInfoChart from './PreviousInstancesInfoChart.vue';
 
@@ -261,7 +278,7 @@
     async function loadChartData() {
         chartLoading.value = true;
         try {
-            const data = await database.getPlayerDetailFromInstance(location.value.tag);
+            const data = await database.getPlayerDetailFromInstance(previousInstancesInfoDialog.value.instanceId);
             chartData.value = data;
         } catch (error) {
             console.error('Failed to load chart data:', error);
@@ -289,7 +306,33 @@
 
     function init() {
         loading.value = true;
-        location.value = parseLocation(previousInstancesInfoDialog.value.instanceId);
+        location.value =
+            previousInstancesInfoDialog.value.provider === 'resonite'
+                ? {
+                      ...location.value,
+                      tag: previousInstancesInfoDialog.value.instanceId,
+                      isOffline: false,
+                      isPrivate: false,
+                      isTraveling: false,
+                      isRealInstance: false,
+                      worldId: '',
+                      instanceId: '',
+                      instanceName: '',
+                      accessType: '',
+                      accessTypeName: '',
+                      region: '',
+                      shortName: '',
+                      userId: null,
+                      hiddenId: null,
+                      privateId: null,
+                      friendsId: null,
+                      groupId: null,
+                      groupAccessType: null,
+                      canRequestInvite: false,
+                      strict: false,
+                      ageGate: false
+                  }
+                : parseLocation(previousInstancesInfoDialog.value.instanceId);
         if (previousInstancesInfoDialog.value.lastId !== previousInstancesInfoDialog.value.instanceId) {
             table.setPageIndex(0);
             previousInstancesInfoDialog.value.lastId = previousInstancesInfoDialog.value.instanceId;
@@ -297,7 +340,7 @@
     }
 
     function refreshPreviousInstancesInfoTable() {
-        database.getPlayersFromInstance(location.value.tag).then((data) => {
+        database.getPlayersFromInstance(previousInstancesInfoDialog.value.instanceId).then((data) => {
             const array = [];
             for (const entry of Array.from(data.values())) {
                 entry.timer = timeToText(entry.time);

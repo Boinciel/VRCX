@@ -41,13 +41,12 @@ const isResoniteRow = (row) => row?.provider === 'resonite';
 const createResoniteLocationCell = (row, onShowInfo) => {
     const label = row?.worldName ?? row?.name ?? row?.location ?? '';
     const groupName = String(row?.groupName ?? '').trim();
-    const location = row?.location ?? '';
 
     return (
         <button
             type="button"
             class="inline-flex min-w-0 items-center truncate text-left"
-            onClick={() => onShowInfo?.(location)}
+            onClick={() => onShowInfo?.(row)}
         >
             <span
                 class="truncate"
@@ -127,9 +126,7 @@ const actionsColumn = ({
                     onClick={(event) => {
                         event.stopPropagation();
                         onShowInfo?.(
-                            isResonite
-                                ? original?.location
-                                : original?.$location?.tag
+                            isResonite ? original : original?.$location?.tag
                         );
                     }}
                 >

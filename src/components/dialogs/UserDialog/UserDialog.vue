@@ -340,6 +340,14 @@
                     ''
             ).trim()
         );
+
+        if (isResoniteExternal) {
+            const resoniteStatusText = getResoniteUserStatusText(user);
+            if (resoniteStatusText) {
+                return resoniteStatusText;
+            }
+        }
+
         if (
             isResoniteExternal &&
             hasKnownResoniteSession &&
@@ -361,6 +369,33 @@
             state += ` (${getUserStatusText(user.status)})`;
         }
         return state;
+    }
+
+    function getResoniteUserStatusText(user) {
+        const status = firstNonEmptyString(user?.resonite?.onlineStatus, user?.resonite?.realtime?.onlineStatus)
+            .trim()
+            .toLowerCase();
+
+        if (status === 'online') {
+            return t('dialog.user.status.online');
+        }
+        if (status === 'sociable') {
+            return 'Sociable';
+        }
+        if (status === 'away') {
+            return 'Away';
+        }
+        if (status === 'busy') {
+            return t('dialog.user.status.busy');
+        }
+        if (status === 'invisible') {
+            return 'Invisible';
+        }
+        if (status === 'offline') {
+            return t('dialog.user.status.offline');
+        }
+
+        return '';
     }
 
     /**

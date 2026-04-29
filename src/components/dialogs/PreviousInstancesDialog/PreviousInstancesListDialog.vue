@@ -203,9 +203,8 @@
             .catch(() => {});
     }
 
-    const handleShowInfo = (location) => {
-        const instanceId = location ?? '';
-        showPreviousInstancesInfoDialog(instanceId);
+    const handleShowInfo = (input) => {
+        showPreviousInstancesInfoDialog(input ?? '');
     };
 
     const columns = computed(() =>
