@@ -298,7 +298,10 @@
                     </TooltipWrapper>
                 </div>
                 <div>
-                    <span v-if="isExternalUser" class="text-xs" v-html="renderedStatusDescription"></span>
+                    <span
+                        v-if="isExternalUser && renderedStatusDescription"
+                        class="text-xs"
+                        v-html="renderedStatusDescription"></span>
                     <span v-else class="text-xs" v-text="userDialog.ref.statusDescription"></span>
                 </div>
             </div>
@@ -319,8 +322,7 @@
                     <Image class="size-8 text-muted-foreground" />
                 </div>
             </div>
-
-            <UserActionDropdown v-if="!isExternalUser" class="ml-2 mt-12" :user-dialog-command="userDialogCommand" />
+            <UserActionDropdown class="ml-2 mt-12" :user-dialog-command="userDialogCommand" />
         </div>
     </div>
 </template>
@@ -426,9 +428,21 @@
 
         return firstNonEmptyString(resoniteUsername, rawDisplayName, resoniteUserId, dialogId);
     });
-    const renderedStatusDescription = computed(() =>
-        renderResoniteRichText(String(userDialog.value.ref?.statusDescription || '').trim())
-    );
+    const shouldHideExternalStatusDescription = computed(() => {
+        if (!isExternalUser.value) {
+            return false;
+        }
+
+        const statusDescription = firstNonEmptyString(userDialog.value.ref?.statusDescription);
+        return /^online on version .+ of .+$/i.test(statusDescription);
+    });
+    const renderedStatusDescription = computed(() => {
+        if (shouldHideExternalStatusDescription.value) {
+            return '';
+        }
+
+        return renderResoniteRichText(String(userDialog.value.ref?.statusDescription || '').trim());
+    });
     const resoniteClientBadge = computed(() => {
         if (!isExternalUser.value) {
             return null;

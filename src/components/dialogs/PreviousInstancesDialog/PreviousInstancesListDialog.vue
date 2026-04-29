@@ -131,7 +131,15 @@
     });
 
     const isResoniteUserVariant = computed(() => {
-        return props.variant === 'user' && String(currentId.value || '').startsWith('resonite:');
+        const userRef = dialogState.value?.userRef;
+        const provider = String(userRef?.provider || '')
+            .trim()
+            .toLowerCase();
+
+        return (
+            props.variant === 'user' &&
+            (provider === 'resonite' || String(currentId.value || '').startsWith('resonite:'))
+        );
     });
 
     const sharedWithResoniteUserId = computed(() => {

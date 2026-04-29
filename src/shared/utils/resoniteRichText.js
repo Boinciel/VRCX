@@ -574,6 +574,23 @@ function createTagEntry(tag) {
 }
 
 /**
+ * Converts Resonite rich-text to a plain-text label for surfaces that cannot
+ * render markup, such as chart axes and narrow list labels.
+ *
+ * @param {string} text - Raw Resonite rich-text string
+ * @returns {string} Plain text with formatting tags removed
+ */
+export function stripResoniteRichText(text) {
+    if (!text) {
+        return '';
+    }
+
+    return String(text)
+        .replace(/<[^>]*>/g, '')
+        .trim();
+}
+
+/**
  * Renders Resonite rich-text as safe HTML.
  *
  * Supported tags include the documented formatting family that can be

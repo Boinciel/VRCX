@@ -13,7 +13,8 @@ vi.mock('../../sqlite.js', () => ({
 vi.mock('../index.js', () => ({
     dbVars: {
         maxTableSize: 500,
-        userPrefix: ''
+        userPrefix: '',
+        userId: 'usr_self'
     }
 }));
 
@@ -398,6 +399,287 @@ describe('gameLog.getUserStats', () => {
     });
 });
 
+describe('gameLog.getInstanceActivity', () => {
+    beforeEach(() => {
+        mocks.execute.mockReset();
+    });
+
+    test('builds Resonite instance activity rows from current-user presence windows', async () => {
+        mocks.execute.mockImplementation(async (callback, sql, params) => {
+            if (
+                sql.includes('_feed_online_offline') &&
+                sql.includes('_feed_gps') &&
+                sql.includes('ORDER BY created_at ASC') &&
+                params?.['@userId'] === 'resonite:U-self'
+            ) {
+                callback([
+                    '2026-04-22T07:00:00.000Z',
+                    Date.parse('2026-04-22T07:00:00.000Z'),
+                    'Zen Garden',
+                    1_800_000,
+                    null,
+                    'Online'
+                ]);
+                callback([
+                    '2026-04-22T07:30:00.000Z',
+                    Date.parse('2026-04-22T07:30:00.000Z'),
+                    'Zen Garden',
+                    1_800_000,
+                    null,
+                    'Offline'
+                ]);
+                return;
+            }
+
+            if (
+                sql.includes('_feed_online_offline') &&
+                sql.includes('_feed_gps') &&
+                params?.['@location'] === 'Zen Garden'
+            ) {
+                callback([
+                    '2026-04-22T07:00:00.000Z',
+                    Date.parse('2026-04-22T07:00:00.000Z'),
+                    'resonite:U-self',
+                    'Self',
+                    'Zen Garden',
+                    1_800_000,
+                    null,
+                    'Online'
+                ]);
+                callback([
+                    '2026-04-22T07:30:00.000Z',
+                    Date.parse('2026-04-22T07:30:00.000Z'),
+                    'resonite:U-self',
+                    'Self',
+                    'Zen Garden',
+                    1_800_000,
+                    null,
+                    'Offline'
+                ]);
+                callback([
+                    '2026-04-22T07:05:00.000Z',
+                    Date.parse('2026-04-22T07:05:00.000Z'),
+                    'resonite:U-friend',
+                    'Friend',
+                    'Zen Garden',
+                    1_200_000,
+                    null,
+                    'Online'
+                ]);
+                callback([
+                    '2026-04-22T07:25:00.000Z',
+                    Date.parse('2026-04-22T07:25:00.000Z'),
+                    'resonite:U-friend',
+                    'Friend',
+                    'Zen Garden',
+                    1_200_000,
+                    null,
+                    'Offline'
+                ]);
+            }
+        });
+
+        const result = await gameLog.getInstanceActivity(
+            '2026-04-22T00:00:00.000Z',
+            '2026-04-22T23:59:59.999Z',
+            {
+                id: 'usr_self',
+                displayName: 'VRChat Self',
+                $resonitePresence: {
+                    linkedContactId: 'resonite:U-self'
+                }
+            }
+        );
+
+        expect(result.currentUserData).toEqual([
+            {
+                id: 'usr_self:Zen Garden:1776843000000',
+                created_at: '2026-04-22T07:30:00.000Z',
+                type: 'Offline',
+                display_name: 'VRChat Self',
+                display_location: 'Zen Garden',
+                location: 'Zen Garden',
+                provider: 'resonite',
+                user_id: 'usr_self',
+                time: 1_800_000
+            }
+        ]);
+        expect(Array.from(result.detailData.values())).toEqual([
+            [
+                {
+                    id: 'resonite:U-friend:Zen Garden:1776842700000:0',
+                    created_at: '2026-04-22T07:25:00.000Z',
+                    type: 'Offline',
+                    display_name: 'Friend',
+                    display_location: 'Zen Garden',
+                    location: 'Zen Garden',
+                    provider: 'resonite',
+                    user_id: 'resonite:U-friend',
+                    time: 1_200_000
+                },
+                {
+                    id: 'usr_self:Zen Garden:1776843000000:1',
+                    created_at: '2026-04-22T07:30:00.000Z',
+                    type: 'Offline',
+                    display_name: 'Self',
+                    display_location: 'Zen Garden',
+                    location: 'Zen Garden',
+                    provider: 'resonite',
+                    user_id: 'usr_self',
+                    time: 1_800_000
+                }
+            ]
+        ]);
+    });
+
+    test('merges overlapping Resonite detail rows for the linked self ids into one segment', async () => {
+        mocks.execute.mockImplementation(async (callback, sql, params) => {
+            if (
+                sql.includes('_feed_online_offline') &&
+                sql.includes('_feed_gps') &&
+                sql.includes('ORDER BY created_at ASC') &&
+                params?.['@userId'] === 'resonite:U-self'
+            ) {
+                callback([
+                    '2026-04-22T07:00:00.000Z',
+                    Date.parse('2026-04-22T07:00:00.000Z'),
+                    'Zen Garden',
+                    1_800_000,
+                    null,
+                    'Online'
+                ]);
+                callback([
+                    '2026-04-22T07:30:00.000Z',
+                    Date.parse('2026-04-22T07:30:00.000Z'),
+                    'Zen Garden',
+                    1_800_000,
+                    null,
+                    'Offline'
+                ]);
+                return;
+            }
+
+            if (
+                sql.includes('_feed_online_offline') &&
+                sql.includes('_feed_gps') &&
+                params?.['@location'] === 'Zen Garden'
+            ) {
+                callback([
+                    '2026-04-22T07:00:00.000Z',
+                    Date.parse('2026-04-22T07:00:00.000Z'),
+                    'resonite:U-self',
+                    'Self Contact',
+                    'Zen Garden',
+                    900_000,
+                    null,
+                    'Online'
+                ]);
+                callback([
+                    '2026-04-22T07:15:00.000Z',
+                    Date.parse('2026-04-22T07:15:00.000Z'),
+                    'resonite:U-self',
+                    'Self Contact',
+                    'Zen Garden',
+                    900_000,
+                    null,
+                    'Offline'
+                ]);
+                callback([
+                    '2026-04-22T07:15:00.000Z',
+                    Date.parse('2026-04-22T07:15:00.000Z'),
+                    'U-self',
+                    'Self User',
+                    'Zen Garden',
+                    900_000,
+                    null,
+                    'Online'
+                ]);
+                callback([
+                    '2026-04-22T07:30:00.000Z',
+                    Date.parse('2026-04-22T07:30:00.000Z'),
+                    'U-self',
+                    'Self User',
+                    'Zen Garden',
+                    900_000,
+                    null,
+                    'Offline'
+                ]);
+            }
+        });
+
+        const result = await gameLog.getInstanceActivity(
+            '2026-04-22T00:00:00.000Z',
+            '2026-04-22T23:59:59.999Z',
+            {
+                id: 'usr_self',
+                displayName: 'VRChat Self',
+                $resonitePresence: {
+                    linkedContactId: 'resonite:U-self',
+                    linkedUserId: 'U-self'
+                }
+            }
+        );
+
+        expect(Array.from(result.detailData.values())).toEqual([
+            [
+                {
+                    id: 'usr_self:Zen Garden:1776843000000:0',
+                    created_at: '2026-04-22T07:30:00.000Z',
+                    type: 'Offline',
+                    display_name: 'Self Contact',
+                    display_location: 'Zen Garden',
+                    location: 'Zen Garden',
+                    provider: 'resonite',
+                    user_id: 'usr_self',
+                    time: 1_800_000
+                }
+            ]
+        ]);
+    });
+});
+
+describe('gameLog.getDateOfInstanceActivity', () => {
+    beforeEach(() => {
+        mocks.execute.mockReset();
+    });
+
+    test('returns Resonite session dates when the current user has linked self presence', async () => {
+        mocks.execute.mockImplementation(async (callback, sql, params) => {
+            if (
+                sql.includes('_feed_online_offline') &&
+                sql.includes('_feed_gps') &&
+                sql.includes('ORDER BY created_at ASC') &&
+                params?.['@userId'] === 'resonite:U-self'
+            ) {
+                callback([
+                    '2026-04-22T07:00:00.000Z',
+                    Date.parse('2026-04-22T07:00:00.000Z'),
+                    'Zen Garden',
+                    1_800_000,
+                    null,
+                    'Online'
+                ]);
+                callback([
+                    '2026-04-22T07:30:00.000Z',
+                    Date.parse('2026-04-22T07:30:00.000Z'),
+                    'Zen Garden',
+                    1_800_000,
+                    null,
+                    'Offline'
+                ]);
+            }
+        });
+
+        const result = await gameLog.getDateOfInstanceActivity({
+            $resonitePresence: {
+                linkedContactId: 'resonite:U-self'
+            }
+        });
+
+        expect(result).toEqual(['2026-04-22T07:00:00.000Z']);
+    });
+});
+
 describe('gameLog.getPreviousInstancesByUserId', () => {
     beforeEach(() => {
         mocks.execute.mockReset();
@@ -689,5 +971,186 @@ describe('gameLog.getPreviousInstancesByUserId', () => {
             }
         ]);
         expect(mocks.execute).toHaveBeenCalledTimes(2);
+    });
+});
+
+describe('gameLog Resonite previous instance info', () => {
+    beforeEach(() => {
+        mocks.execute.mockReset();
+    });
+
+    test('scopes Resonite previous-instance participants to the selected overlap window', async () => {
+        mocks.execute.mockImplementation(async (callback, sql, params) => {
+            if (
+                sql.includes('_feed_online_offline') &&
+                sql.includes('_feed_gps') &&
+                params?.['@location'] === 'Zen Garden'
+            ) {
+                callback([
+                    '2026-04-22T06:50:00.000Z',
+                    Date.parse('2026-04-22T06:50:00.000Z'),
+                    'resonite:U-host',
+                    'Host',
+                    'Zen Garden',
+                    '',
+                    null,
+                    'Online'
+                ]);
+                callback([
+                    '2026-04-22T07:10:00.000Z',
+                    Date.parse('2026-04-22T07:10:00.000Z'),
+                    'resonite:U-host',
+                    'Host',
+                    'Another World',
+                    1_200_000,
+                    'Zen Garden',
+                    'GPS'
+                ]);
+                callback([
+                    '2026-04-22T07:00:00.000Z',
+                    Date.parse('2026-04-22T07:00:00.000Z'),
+                    'resonite:U-target',
+                    'Target',
+                    'Zen Garden',
+                    '',
+                    null,
+                    'Online'
+                ]);
+                callback([
+                    '2026-04-22T07:30:00.000Z',
+                    Date.parse('2026-04-22T07:30:00.000Z'),
+                    'resonite:U-target',
+                    'Target',
+                    'Zen Garden',
+                    1_800_000,
+                    null,
+                    'Offline'
+                ]);
+                callback([
+                    '2026-04-22T07:20:00.000Z',
+                    Date.parse('2026-04-22T07:20:00.000Z'),
+                    'resonite:U-third',
+                    'Third',
+                    'Zen Garden',
+                    '',
+                    null,
+                    'Online'
+                ]);
+                callback([
+                    '2026-04-22T07:40:00.000Z',
+                    Date.parse('2026-04-22T07:40:00.000Z'),
+                    'resonite:U-third',
+                    'Third',
+                    'Zen Garden',
+                    1_200_000,
+                    null,
+                    'Offline'
+                ]);
+            }
+        });
+
+        const result = await gameLog.getPlayersFromInstance({
+            provider: 'resonite',
+            location: 'Zen Garden',
+            sessionStartAt: '2026-04-22T07:00:00.000Z',
+            sessionEndTs: Date.parse('2026-04-22T07:30:00.000Z')
+        });
+
+        expect(Array.from(result.values())).toEqual([
+            {
+                created_at: '2026-04-22T07:00:00.000Z',
+                displayName: 'Host',
+                userId: 'resonite:U-host',
+                time: 600_000,
+                count: 1
+            },
+            {
+                created_at: '2026-04-22T07:00:00.000Z',
+                displayName: 'Target',
+                userId: 'resonite:U-target',
+                time: 1_800_000,
+                count: 1
+            },
+            {
+                created_at: '2026-04-22T07:20:00.000Z',
+                displayName: 'Third',
+                userId: 'resonite:U-third',
+                time: 600_000,
+                count: 1
+            }
+        ]);
+    });
+
+    test('builds Resonite previous-instance chart rows from overlap windows', async () => {
+        mocks.execute.mockImplementation(async (callback, sql, params) => {
+            if (
+                sql.includes('_feed_online_offline') &&
+                sql.includes('_feed_gps') &&
+                params?.['@location'] === 'Zen Garden'
+            ) {
+                callback([
+                    '2026-04-22T06:50:00.000Z',
+                    Date.parse('2026-04-22T06:50:00.000Z'),
+                    'resonite:U-host',
+                    'Host',
+                    'Zen Garden',
+                    '',
+                    null,
+                    'Online'
+                ]);
+                callback([
+                    '2026-04-22T07:10:00.000Z',
+                    Date.parse('2026-04-22T07:10:00.000Z'),
+                    'resonite:U-host',
+                    'Host',
+                    'Another World',
+                    1_200_000,
+                    'Zen Garden',
+                    'GPS'
+                ]);
+                callback([
+                    '2026-04-22T07:00:00.000Z',
+                    Date.parse('2026-04-22T07:00:00.000Z'),
+                    'resonite:U-target',
+                    'Target',
+                    'Zen Garden',
+                    '',
+                    null,
+                    'Online'
+                ]);
+                callback([
+                    '2026-04-22T07:30:00.000Z',
+                    Date.parse('2026-04-22T07:30:00.000Z'),
+                    'resonite:U-target',
+                    'Target',
+                    'Zen Garden',
+                    1_800_000,
+                    null,
+                    'Offline'
+                ]);
+            }
+        });
+
+        const result = await gameLog.getPlayerDetailFromInstance({
+            provider: 'resonite',
+            location: 'Zen Garden',
+            sessionStartAt: '2026-04-22T07:00:00.000Z',
+            sessionEndTs: Date.parse('2026-04-22T07:30:00.000Z')
+        });
+
+        expect(result).toEqual([
+            {
+                created_at: '2026-04-22T07:10:00.000Z',
+                display_name: 'Host',
+                user_id: 'resonite:U-host',
+                time: 600_000
+            },
+            {
+                created_at: '2026-04-22T07:30:00.000Z',
+                display_name: 'Target',
+                user_id: 'resonite:U-target',
+                time: 1_800_000
+            }
+        ]);
     });
 });

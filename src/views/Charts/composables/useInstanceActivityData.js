@@ -4,6 +4,7 @@ import dayjs from 'dayjs';
 
 import { database } from '../../../services/database';
 import { getWorldName } from '../../../shared/utils';
+import { stripResoniteRichText } from '../../../shared/utils/resoniteRichText';
 
 export function useInstanceActivityData() {
     const activityData = ref([]);
@@ -11,9 +12,11 @@ export function useInstanceActivityData() {
     const allDateOfActivity = ref(new Set());
     const worldNameArray = ref([]);
 
-    async function getAllDateOfActivity() {
+    async function getAllDateOfActivity(currentUser) {
         const utcDateStrings =
-            (await database.getDateOfInstanceActivity()) || [];
+            (await database.getDateOfInstanceActivity(
+                currentUser?.value || currentUser
+            )) || [];
         const uniqueDates = new Set();
 
         for (const utcString of utcDateStrings) {
@@ -30,7 +33,12 @@ export function useInstanceActivityData() {
     async function getWorldNameData() {
         worldNameArray.value = await Promise.all(
             activityData.value.map(async (item) => {
-                return await getWorldName(item.location);
+                if (item.provider === 'resonite') {
+                    return stripResoniteRichText(
+                        item.displayLocation || item.location
+                    );
+                }
+                return (await getWorldName(item.location)) || item.location;
             })
         );
     }
@@ -52,11 +60,14 @@ export function useInstanceActivityData() {
             .toISOString();
         const dbData = await database.getInstanceActivity(
             localStartDate,
-            localEndDate
+            localEndDate,
+            currentUser.value
         );
 
         const transformData = (item) => ({
             ...item,
+            displayLocation:
+                item.display_location || item.displayLocation || item.location,
             joinTime: dayjs(item.created_at).subtract(item.time, 'millisecond'),
             leaveTime: dayjs(item.created_at),
             time: item.time < 0 ? 0 : item.time,

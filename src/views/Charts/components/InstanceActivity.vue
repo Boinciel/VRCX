@@ -399,7 +399,7 @@
 
     onMounted(async () => {
         try {
-            getAllDateOfActivity();
+            await getAllDateOfActivity(currentUser.value);
             await getActivityData(selectedDate, currentUser, friends, allFavoriteFriendIds, () =>
                 handleIntersectionObserver(activityDetailChartRef)
             );
@@ -430,7 +430,7 @@
             );
             await getWorldNameData();
             // possibility past 24:00
-            getAllDateOfActivity();
+            await getAllDateOfActivity(currentUser.value);
 
             await nextTick();
 

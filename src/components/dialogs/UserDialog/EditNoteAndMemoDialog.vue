@@ -12,7 +12,7 @@
             </DialogHeader>
 
             <div>
-                <template v-if="!hideUserNotes || (hideUserNotes && hideUserMemos)">
+                <template v-if="showNoteField">
                     <span class="name">{{ t('dialog.user.info.note') }}</span>
                     <InputGroupTextareaField
                         v-model="note"
@@ -24,7 +24,7 @@
                         class="my-2"
                         show-count />
                 </template>
-                <template v-if="!hideUserMemos || (hideUserNotes && hideUserMemos)">
+                <template v-if="showMemoField">
                     <span class="name">{{ t('dialog.user.info.memo') }}</span>
                     <InputGroupTextareaField
                         v-model="memo"
@@ -47,7 +47,7 @@
 
 <script setup>
     import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
-    import { ref, watch } from 'vue';
+    import { computed, ref, watch } from 'vue';
     import { Button } from '@/components/ui/button';
     import { InputGroupTextareaField } from '@/components/ui/input-group';
     import { storeToRefs } from 'pinia';
@@ -75,6 +75,13 @@
 
     const note = ref('');
     const memo = ref('');
+    const isExternalUser = computed(
+        () =>
+            Boolean(userDialog.value?.isExternal) ||
+            String(userDialog.value?.id || userDialog.value?.ref?.id || '').startsWith('resonite:')
+    );
+    const showNoteField = computed(() => !isExternalUser.value && (!hideUserNotes.value || hideUserMemos.value));
+    const showMemoField = computed(() => !hideUserMemos.value || hideUserNotes.value);
 
     watch(
         () => props.visible,
@@ -86,8 +93,10 @@
     );
 
     function saveChanges() {
-        cleanNote(note.value);
-        checkNote(userDialog.value.ref, note.value);
+        if (!isExternalUser.value) {
+            cleanNote(note.value);
+            checkNote(userDialog.value.ref, note.value);
+        }
         onUserMemoChange();
         emit('update:visible', false);
     }

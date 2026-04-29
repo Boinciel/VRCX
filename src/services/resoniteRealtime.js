@@ -520,7 +520,12 @@ export function mergeResoniteRealtimePresence(resoniteFriendsList) {
         );
 
         const locationName = isOnline
-            ? firstNonEmptyString(privateSessionLabel, preferredLocationName)
+            ? normalizeSyntheticPrivateSessionLabel(
+                  firstNonEmptyString(
+                      privateSessionLabel,
+                      preferredLocationName
+                  )
+              )
             : '';
         const preferSnapshotStatusDescription =
             shouldPreferResoniteSnapshotFields(
@@ -578,9 +583,11 @@ export function mergeResoniteRealtimePresence(resoniteFriendsList) {
             realtimeReason: 'realtime-status-authoritative'
         });
         const currentSessionName = isOnline
-            ? firstNonEmptyString(
-                  privateSessionLabel,
-                  preferredCurrentSessionName
+            ? normalizeSyntheticPrivateSessionLabel(
+                  firstNonEmptyString(
+                      privateSessionLabel,
+                      preferredCurrentSessionName
+                  )
               )
             : '';
         const currentSessionHash = isOnline ? preferredCurrentSessionHash : '';
@@ -594,12 +601,10 @@ export function mergeResoniteRealtimePresence(resoniteFriendsList) {
             : '';
 
         const location = locationName
-            ? locationName === 'Private'
-                ? 'private'
-                : locationName
+            ? locationName
             : isOnline
               ? privateSessionLabel
-                  ? 'private'
+                  ? 'Private'
                   : ''
               : 'offline';
         const derivedStatusDescription = buildStatusDescription({
@@ -1241,14 +1246,16 @@ export function buildMergedPresence(
         canPreservePreviousSessionIdentity &&
         (hasLocationData || preservePreviousSessionIdentity);
     const sessionPrivacyLabel = getPrivateSessionLabel(currentSession);
-    const currentSessionName = firstNonEmptyString(
-        sessionPrivacyLabel,
-        extractSessionDisplayName(eventObject.currentSession),
-        extractSessionDisplayName(eventObject.session),
-        extractSessionDisplayName(currentSession),
-        reusePreviousSessionDisplayFields
-            ? previousPresence?.currentSessionName
-            : ''
+    const currentSessionName = normalizeSyntheticPrivateSessionLabel(
+        firstNonEmptyString(
+            sessionPrivacyLabel,
+            extractSessionDisplayName(eventObject.currentSession),
+            extractSessionDisplayName(eventObject.session),
+            extractSessionDisplayName(currentSession),
+            reusePreviousSessionDisplayFields
+                ? previousPresence?.currentSessionName
+                : ''
+        )
     );
     const currentSessionHash = firstNonEmptyString(
         eventObject.currentSession?.sessionHash,
@@ -1269,20 +1276,22 @@ export function buildMergedPresence(
             eventObject.profile?.description,
             previousPresence?.statusDescription
         ),
-        locationName: firstNonEmptyString(
-            sessionPrivacyLabel,
-            eventObject.locationName,
-            eventObject.location,
-            eventObject.sessionName,
-            eventObject.currentSession?.name,
-            eventObject.currentSession?.sessionName,
-            eventObject.currentSession?.locationName,
-            eventObject.session?.name,
-            eventObject.session?.sessionName,
-            currentSessionName,
-            reusePreviousSessionDisplayFields
-                ? previousPresence?.locationName
-                : ''
+        locationName: normalizeSyntheticPrivateSessionLabel(
+            firstNonEmptyString(
+                sessionPrivacyLabel,
+                eventObject.locationName,
+                eventObject.location,
+                eventObject.sessionName,
+                eventObject.currentSession?.name,
+                eventObject.currentSession?.sessionName,
+                eventObject.currentSession?.locationName,
+                eventObject.session?.name,
+                eventObject.session?.sessionName,
+                currentSessionName,
+                reusePreviousSessionDisplayFields
+                    ? previousPresence?.locationName
+                    : ''
+            )
         ),
         appVersion: firstNonEmptyString(
             eventObject.appVersion,
@@ -1477,20 +1486,6 @@ function mapResoniteStatusToVrcxStatus(status, isOnline) {
     return 'active';
 }
 
-function hasExplicitSnapshotSessionFields(friendData) {
-    return Boolean(
-        firstNonEmptyString(
-            friendData?.resonite?.currentSessionHash,
-            friendData?.resonite?.currentSessionName,
-            friendData?.resonite?.locationName,
-            friendData?.resonite?.realtime?.currentSessionHash,
-            friendData?.resonite?.realtime?.currentSessionName,
-            friendData?.ref?.traveling,
-            sanitizeResoniteLocationFallback(friendData?.ref?.location, true)
-        )
-    );
-}
-
 function shouldPreferSnapshotSessionFields(friendData, realtimePresence) {
     if (
         !shouldPreferResoniteSnapshotFields(
@@ -1641,6 +1636,10 @@ function isSyntheticPrivateSessionLabel(value) {
             .trim()
             .toLowerCase() === 'private'
     );
+}
+
+function normalizeSyntheticPrivateSessionLabel(value) {
+    return isSyntheticPrivateSessionLabel(value) ? 'Private' : value;
 }
 
 function getCachedSessionName(sessionHash) {

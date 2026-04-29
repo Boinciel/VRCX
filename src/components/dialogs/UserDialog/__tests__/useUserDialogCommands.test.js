@@ -165,6 +165,19 @@ describe('useUserDialogCommands', () => {
             );
         });
 
+        it('Share: should do nothing for external Resonite users', () => {
+            userDialog.value.id = 'resonite:U-test123';
+            userDialog.value.isExternal = true;
+
+            const { userDialogCommand } = useUserDialogCommands(
+                userDialog,
+                deps
+            );
+            userDialogCommand('Share');
+
+            expect(copyToClipboard).not.toHaveBeenCalled();
+        });
+
         it('Add Favorite: should call showFavoriteDialog', () => {
             const { userDialogCommand } = useUserDialogCommands(
                 userDialog,

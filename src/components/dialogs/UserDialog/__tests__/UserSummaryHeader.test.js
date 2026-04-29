@@ -196,6 +196,15 @@ describe('UserSummaryHeader', () => {
         });
 
         expect(wrapper.text()).toContain('ReCon');
+        expect(
+            wrapper.html().match(/Online on version 0\.12\.1-beta of ReCon/g)
+        ).toHaveLength(1);
+    });
+
+    test('renders the action dropdown for external users', () => {
+        const wrapper = mountComponent();
+
+        expect(wrapper.html()).toContain('user-action-dropdown-stub');
     });
 
     test('renders Resonite resolved badges in the header badge strip', () => {

@@ -224,6 +224,9 @@ export function useUserDialogCommands(
      */
     function buildCommandMap() {
         const D = () => userDialog.value;
+        const isExternalDialogUser = () =>
+            Boolean(D().isExternal) ||
+            String(D().id || D().ref?.id || '').startsWith('resonite:');
 
         return {
             // --- Direct commands ---
@@ -233,6 +236,9 @@ export function useUserDialogCommands(
                 showUserDialog(userId);
             },
             Share: () => {
+                if (isExternalDialogUser()) {
+                    return;
+                }
                 copyToClipboard(
                     `https://vrchat.com/home/user/${D().id}`,
                     t('message.user.url_copied')

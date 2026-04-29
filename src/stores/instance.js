@@ -114,6 +114,8 @@ export const useInstanceStore = defineStore('Instance', () => {
         instanceId: '',
         provider: 'vrchat',
         displayLabel: '',
+        sessionStartAt: '',
+        sessionEndTs: 0,
         lastId: '',
         visible: false
     });
@@ -343,10 +345,26 @@ export const useInstanceStore = defineStore('Instance', () => {
                 : String(
                       input?.worldName || input?.name || input?.location || ''
                   ).trim();
+        const sessionStartAt =
+            typeof input === 'string'
+                ? ''
+                : String(
+                      input?.sessionStartAt || input?.created_at || ''
+                  ).trim();
+        const sessionEndTs =
+            typeof input === 'string'
+                ? 0
+                : Number(input?.sessionEndTs || input?.last_ts || 0);
         previousInstancesInfoDialog.value.visible = true;
         previousInstancesInfoDialog.value.instanceId = instanceId;
         previousInstancesInfoDialog.value.provider = provider;
         previousInstancesInfoDialog.value.displayLabel = displayLabel;
+        previousInstancesInfoDialog.value.sessionStartAt = sessionStartAt;
+        previousInstancesInfoDialog.value.sessionEndTs = Number.isFinite(
+            sessionEndTs
+        )
+            ? sessionEndTs
+            : 0;
         uiStore.openDialog({
             type: 'previous-instances-info',
             id: instanceId || '',

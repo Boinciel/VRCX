@@ -226,6 +226,7 @@ describe('FriendItem.vue', () => {
         expect(getResoniteSessionByHashMock).toHaveBeenCalledWith('S-hash');
         expect(wrapper.text()).toContain('My World - Contacts+');
         expect(wrapper.html()).toContain('color:#00ffff');
+        expect(wrapper.html()).toContain('/images/resonite/resonite_color.svg');
     });
 
     test('appends Resonite session access label for active external rows', () => {
@@ -256,5 +257,29 @@ describe('FriendItem.vue', () => {
         expect(getResoniteSessionByHashMock).toHaveBeenCalledWith('S-public');
         expect(wrapper.text()).toContain('Workshop - Public');
         expect(wrapper.html()).toContain('color:#00ff00');
+    });
+
+    test('does not prepend the Resonite icon when only a status description is present', () => {
+        const wrapper = mountItem({
+            friend: makeFriend({
+                id: 'resonite:U-3',
+                isExternal: true,
+                state: 'active',
+                ref: {
+                    displayName: 'IdleUser',
+                    $userColour: '#fff',
+                    statusDescription: '<color=orange>Idle</color>',
+                    location: 'offline',
+                    traveling: '',
+                    travelingToLocation: '',
+                    $location_at: 789
+                }
+            })
+        });
+
+        expect(wrapper.text()).toContain('Idle');
+        expect(wrapper.html()).not.toContain(
+            '/images/resonite/resonite_color.svg'
+        );
     });
 });

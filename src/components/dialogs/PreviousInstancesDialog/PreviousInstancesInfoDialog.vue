@@ -275,10 +275,23 @@
         }
     }
 
+    function getResoniteInstanceQuery() {
+        return {
+            provider: 'resonite',
+            location: previousInstancesInfoDialog.value.instanceId,
+            sessionStartAt: previousInstancesInfoDialog.value.sessionStartAt,
+            sessionEndTs: previousInstancesInfoDialog.value.sessionEndTs
+        };
+    }
+
     async function loadChartData() {
         chartLoading.value = true;
         try {
-            const data = await database.getPlayerDetailFromInstance(previousInstancesInfoDialog.value.instanceId);
+            const queryInput =
+                previousInstancesInfoDialog.value.provider === 'resonite'
+                    ? getResoniteInstanceQuery()
+                    : previousInstancesInfoDialog.value.instanceId;
+            const data = await database.getPlayerDetailFromInstance(queryInput);
             chartData.value = data;
         } catch (error) {
             console.error('Failed to load chart data:', error);
@@ -333,14 +346,23 @@
                       ageGate: false
                   }
                 : parseLocation(previousInstancesInfoDialog.value.instanceId);
-        if (previousInstancesInfoDialog.value.lastId !== previousInstancesInfoDialog.value.instanceId) {
+        const dialogKey =
+            previousInstancesInfoDialog.value.provider === 'resonite'
+                ? `${previousInstancesInfoDialog.value.instanceId}:${previousInstancesInfoDialog.value.sessionStartAt}:${previousInstancesInfoDialog.value.sessionEndTs}`
+                : previousInstancesInfoDialog.value.instanceId;
+        if (previousInstancesInfoDialog.value.lastId !== dialogKey) {
             table.setPageIndex(0);
-            previousInstancesInfoDialog.value.lastId = previousInstancesInfoDialog.value.instanceId;
+            previousInstancesInfoDialog.value.lastId = dialogKey;
         }
     }
 
     function refreshPreviousInstancesInfoTable() {
-        database.getPlayersFromInstance(previousInstancesInfoDialog.value.instanceId).then((data) => {
+        const queryInput =
+            previousInstancesInfoDialog.value.provider === 'resonite'
+                ? getResoniteInstanceQuery()
+                : previousInstancesInfoDialog.value.instanceId;
+
+        database.getPlayersFromInstance(queryInput).then((data) => {
             const array = [];
             for (const entry of Array.from(data.values())) {
                 entry.timer = timeToText(entry.time);

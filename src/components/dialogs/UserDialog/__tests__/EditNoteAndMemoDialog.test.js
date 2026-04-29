@@ -2,6 +2,14 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { mount } from '@vue/test-utils';
 import { ref } from 'vue';
 
+const userDialogRef = ref({
+    id: 'usr_1',
+    note: 'n1',
+    memo: 'm1',
+    isExternal: false,
+    ref: { id: 'usr_1', note: 'n1' }
+});
+
 const mocks = vi.hoisted(() => ({
     saveUserMemo: vi.fn(),
     saveNote: vi.fn(async () => ({
@@ -15,12 +23,7 @@ vi.mock('pinia', async (i) => ({ ...(await i()), storeToRefs: (s) => s }));
 vi.mock('vue-i18n', () => ({ useI18n: () => ({ t: (k) => k }) }));
 vi.mock('../../../../stores', () => ({
     useUserStore: () => ({
-        userDialog: ref({
-            id: 'usr_1',
-            note: 'n1',
-            memo: 'm1',
-            ref: { id: 'usr_1', note: 'n1' }
-        }),
+        userDialog: userDialogRef,
         cachedUsers: new Map([['usr_1', { note: 'n1' }]])
     }),
     useAppearanceSettingsStore: () => ({
@@ -63,6 +66,14 @@ import EditNoteAndMemoDialog from '../EditNoteAndMemoDialog.vue';
 describe('EditNoteAndMemoDialog.vue', () => {
     beforeEach(() => {
         mocks.saveUserMemo.mockClear();
+        mocks.saveNote.mockClear();
+        userDialogRef.value = {
+            id: 'usr_1',
+            note: 'n1',
+            memo: 'm1',
+            isExternal: false,
+            ref: { id: 'usr_1', note: 'n1' }
+        };
     });
 
     it('emits close and saves memo on confirm', async () => {
@@ -75,5 +86,29 @@ describe('EditNoteAndMemoDialog.vue', () => {
 
         expect(mocks.saveUserMemo).toHaveBeenCalledWith('usr_1', 'm1');
         expect(wrapper.emitted('update:visible')).toEqual([[false]]);
+    });
+
+    it('hides the note field and skips VRChat note saves for external users', async () => {
+        userDialogRef.value = {
+            id: 'resonite:U-1',
+            note: 'n1',
+            memo: 'm1',
+            isExternal: true,
+            ref: { id: 'resonite:U-1', note: 'n1' }
+        };
+
+        const wrapper = mount(EditNoteAndMemoDialog, {
+            props: { visible: false }
+        });
+        await wrapper.setProps({ visible: true });
+
+        expect(wrapper.text()).not.toContain('dialog.user.info.note');
+        expect(wrapper.text()).toContain('dialog.user.info.memo');
+
+        const buttons = wrapper.findAll('[data-testid="btn"]');
+        await buttons[1].trigger('click');
+
+        expect(mocks.saveNote).not.toHaveBeenCalled();
+        expect(mocks.saveUserMemo).toHaveBeenCalledWith('resonite:U-1', 'm1');
     });
 });

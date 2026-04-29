@@ -29,10 +29,14 @@
                 <span v-if="isFriendActiveOrOffline && !friend.isExternal" class="block truncate text-xs">{{
                     friend.ref.statusDescription
                 }}</span>
-                <span
-                    v-else-if="isFriendActiveOrOffline"
-                    class="block truncate text-xs"
-                    v-html="renderedExternalPresenceLine"></span>
+                <span v-else-if="isFriendActiveOrOffline" class="flex min-w-0 items-center gap-1 text-xs">
+                    <img
+                        v-if="showResoniteProviderIcon"
+                        :src="resoniteProviderIconUrl"
+                        alt="Resonite"
+                        class="size-3.5 flex-none" />
+                    <span class="block truncate" v-html="renderedExternalPresenceLine"></span>
+                </span>
                 <template v-else>
                     <div v-if="friend.pendingOffline" class="extra block truncate text-xs">
                         {{ t('side_panel.pending_offline') }}
@@ -50,7 +54,14 @@
                             </div>
                         </template>
                         <template v-else>
-                            <span class="text-xs" v-html="renderedExternalPresenceLine"></span>
+                            <span class="flex min-w-0 items-center gap-1 text-xs">
+                                <img
+                                    v-if="showResoniteProviderIcon"
+                                    :src="resoniteProviderIconUrl"
+                                    alt="Resonite"
+                                    class="size-3.5 flex-none" />
+                                <span class="block truncate" v-html="renderedExternalPresenceLine"></span>
+                            </span>
                         </template>
                     </template>
                     <template v-else>
@@ -60,7 +71,14 @@
                             :location="locationProp"
                             :traveling="travelingProp"
                             :link="false" />
-                        <span v-else class="text-xs" v-html="renderedExternalPresenceLine"></span>
+                        <span v-else class="flex min-w-0 items-center gap-1 text-xs">
+                            <img
+                                v-if="showResoniteProviderIcon"
+                                :src="resoniteProviderIconUrl"
+                                alt="Resonite"
+                                class="size-3.5 flex-none" />
+                            <span class="block truncate" v-html="renderedExternalPresenceLine"></span>
+                        </span>
                     </template>
                 </template>
             </div>
@@ -95,6 +113,8 @@
     import '@/styles/status-icon.css';
     import { showUserDialog } from '../../../coordinators/userCoordinator';
     import { confirmDeleteFriend } from '../../../coordinators/friendRelationshipCoordinator';
+
+    const resoniteProviderIconUrl = '/images/resonite/resonite_color.svg';
 
     const props = defineProps({
         friend: { type: Object, default: null },
@@ -155,6 +175,15 @@
         const provider = String(props.friend?.provider || 'external').trim();
 
         return traveling || location || statusDescription || '';
+    });
+    const showResoniteProviderIcon = computed(() => {
+        if (!props.friend?.isExternal) {
+            return false;
+        }
+
+        const traveling = String(props.friend?.ref?.traveling || '').trim();
+        const rawLocation = String(props.friend?.ref?.location || '').trim();
+        return Boolean(traveling || (rawLocation && rawLocation !== 'offline'));
     });
 
     const epoch = computed(() =>

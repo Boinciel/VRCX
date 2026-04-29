@@ -420,8 +420,12 @@ describe('FriendsLocationsCard.vue', () => {
             expect(wrapper.find('.location-stub').exists()).toBe(false);
             expect(wrapper.text()).toContain('Soft Sea of Stars - Public');
             expect(wrapper.text()).not.toContain('<color=#E774EB>');
-            expect(wrapper.find('.friend-card__location').classes()).not.toContain('text-sm');
-            expect(wrapper.find('.friend-card__location').classes()).not.toContain('text-muted-foreground');
+            expect(
+                wrapper.find('.friend-card__location').classes()
+            ).not.toContain('text-sm');
+            expect(
+                wrapper.find('.friend-card__location').classes()
+            ).not.toContain('text-muted-foreground');
             expect(wrapper.find('.x-location__text').exists()).toBe(true);
         });
     });

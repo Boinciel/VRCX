@@ -27,6 +27,480 @@ function isCountableResoniteLocation(value) {
     );
 }
 
+function parseResoniteInstanceWindowTs(value) {
+    if (typeof value === 'number' && Number.isFinite(value) && value > 0) {
+        return value;
+    }
+
+    const normalized = String(value || '').trim();
+    if (!normalized) {
+        return 0;
+    }
+
+    const parsedNumber = Number(normalized);
+    if (Number.isFinite(parsedNumber) && parsedNumber > 0) {
+        return parsedNumber;
+    }
+
+    const parsedDate = Date.parse(normalized);
+    return Number.isFinite(parsedDate) ? parsedDate : 0;
+}
+
+function buildResoniteInstanceScope(input) {
+    const location = String(input?.location || input?.instanceId || '').trim();
+    const startTs = parseResoniteInstanceWindowTs(
+        input?.sessionStartAt || input?.created_at
+    );
+    const endTs = parseResoniteInstanceWindowTs(
+        input?.sessionEndTs || input?.last_ts
+    );
+
+    return {
+        location,
+        startTs,
+        endTs: endTs >= startTs ? endTs : startTs,
+        hasExplicitWindow: startTs > 0 && endTs >= startTs
+    };
+}
+
+function getResoniteActivityCandidateIds(currentUser) {
+    const ids = [];
+    const pushIfPresent = (value) => {
+        const normalizedValue = String(value || '').trim();
+        if (normalizedValue && !ids.includes(normalizedValue)) {
+            ids.push(normalizedValue);
+        }
+    };
+
+    pushIfPresent(currentUser?.$resonitePresence?.linkedContactId);
+    pushIfPresent(currentUser?.$resonitePresence?.linkedUserId);
+    pushIfPresent(currentUser?.resonite?.linkedContactId);
+    pushIfPresent(currentUser?.resonite?.linkedUserId);
+
+    return ids;
+}
+
+async function getResoniteCurrentUserSessionWindows(currentUser) {
+    const candidateIds = getResoniteActivityCandidateIds(currentUser);
+
+    for (const userId of candidateIds) {
+        const sessions = await getResoniteSessionWindowsByUserId(userId);
+        if (sessions.length > 0) {
+            return {
+                candidateIds,
+                matchedUserId: userId,
+                sessions
+            };
+        }
+    }
+
+    return {
+        candidateIds,
+        matchedUserId: candidateIds[0] || '',
+        sessions: []
+    };
+}
+
+function buildResoniteActivityRange(startDate, endDate) {
+    return {
+        startTs: Date.parse(startDate),
+        endTs: Date.parse(endDate)
+    };
+}
+
+function mergeResoniteActivityRows(rows) {
+    const mergeToleranceMs = 3 * 1000;
+    const sortedRows = [...rows].sort((left, right) => {
+        const userCompare = String(left.user_id || '').localeCompare(
+            String(right.user_id || '')
+        );
+        if (userCompare !== 0) {
+            return userCompare;
+        }
+
+        const leftStartTs =
+            Date.parse(String(left.created_at || '')) -
+            Math.max(0, Number(left.time || 0));
+        const rightStartTs =
+            Date.parse(String(right.created_at || '')) -
+            Math.max(0, Number(right.time || 0));
+        return leftStartTs - rightStartTs;
+    });
+
+    const mergedRows = [];
+    for (const row of sortedRows) {
+        const rowEndTs = Date.parse(String(row.created_at || ''));
+        const rowStartTs = rowEndTs - Math.max(0, Number(row.time || 0));
+        const previousRow = mergedRows[mergedRows.length - 1];
+
+        if (
+            previousRow &&
+            previousRow.user_id === row.user_id &&
+            previousRow.location === row.location
+        ) {
+            const previousEndTs = Date.parse(
+                String(previousRow.created_at || '')
+            );
+            const previousStartTs =
+                previousEndTs - Math.max(0, Number(previousRow.time || 0));
+            if (rowStartTs <= previousEndTs + mergeToleranceMs) {
+                const mergedStartTs = Math.min(previousStartTs, rowStartTs);
+                const mergedEndTs = Math.max(previousEndTs, rowEndTs);
+                previousRow.created_at = new Date(mergedEndTs).toJSON();
+                previousRow.time = Math.max(0, mergedEndTs - mergedStartTs);
+                if (!previousRow.display_name && row.display_name) {
+                    previousRow.display_name = row.display_name;
+                }
+                if (!previousRow.display_location && row.display_location) {
+                    previousRow.display_location = row.display_location;
+                }
+                continue;
+            }
+        }
+
+        mergedRows.push({ ...row });
+    }
+
+    return mergedRows.map((row, index) => ({
+        ...row,
+        id: `${row.user_id}:${row.location}:${Date.parse(String(row.created_at || ''))}:${index}`
+    }));
+}
+
+function getResoniteActivityWindowOverlap(window, range) {
+    const startTs = Number(window?.startTs || 0);
+    const endTs = Number(window?.endTs || 0);
+    if (startTs <= 0 || endTs <= 0 || endTs <= startTs) {
+        return null;
+    }
+
+    const overlapStartTs = Math.max(startTs, range.startTs);
+    const overlapEndTs = Math.min(endTs, range.endTs);
+    if (overlapEndTs <= overlapStartTs) {
+        return null;
+    }
+
+    return {
+        startTs: overlapStartTs,
+        endTs: overlapEndTs
+    };
+}
+
+async function getResoniteInstanceActivity(startDate, endDate, currentUser) {
+    const currentUserId = String(currentUser?.id || dbVars.userId || '').trim();
+    const { candidateIds, sessions } =
+        await getResoniteCurrentUserSessionWindows(currentUser);
+    const selfIdSet = new Set(candidateIds);
+    const range = buildResoniteActivityRange(startDate, endDate);
+    const currentUserData = [];
+    const detailData = new Map();
+
+    for (const session of sessions) {
+        const overlap = getResoniteActivityWindowOverlap(session, range);
+        if (!overlap || !session.location) {
+            continue;
+        }
+
+        currentUserData.push({
+            id: `${currentUserId}:${session.location}:${overlap.endTs}`,
+            created_at: new Date(overlap.endTs).toJSON(),
+            type: 'Offline',
+            display_name: currentUser?.displayName || currentUserId,
+            display_location: session.location,
+            location: session.location,
+            provider: 'resonite',
+            user_id: currentUserId,
+            time: Math.max(0, overlap.endTs - overlap.startTs)
+        });
+
+        const participants = await getResoniteInstanceParticipantWindows({
+            provider: 'resonite',
+            location: session.location,
+            sessionStartAt: overlap.startTs,
+            sessionEndTs: overlap.endTs
+        });
+
+        detailData.set(
+            `${session.location}:${overlap.startTs}:${overlap.endTs}`,
+            mergeResoniteActivityRows(
+                participants.map((participant, index) => {
+                    const participantUserId = String(
+                        participant.userId || ''
+                    ).trim();
+                    const normalizedUserId = selfIdSet.has(participantUserId)
+                        ? currentUserId
+                        : participantUserId;
+
+                    return {
+                        id: `${normalizedUserId}:${participant.location}:${participant.endTs}:${index}`,
+                        created_at: new Date(participant.endTs).toJSON(),
+                        type: 'Offline',
+                        display_name:
+                            participant.displayName ||
+                            normalizedUserId ||
+                            participant.location,
+                        display_location: participant.location,
+                        location: participant.location,
+                        provider: 'resonite',
+                        user_id: normalizedUserId,
+                        time: Math.max(
+                            0,
+                            participant.endTs - participant.startTs
+                        )
+                    };
+                })
+            )
+        );
+    }
+
+    currentUserData.sort(
+        (left, right) =>
+            Date.parse(String(left.created_at || '')) -
+            Date.parse(String(right.created_at || ''))
+    );
+
+    return {
+        currentUserData,
+        detailData
+    };
+}
+
+async function getResoniteInstanceActivityDates(currentUser) {
+    const { sessions } =
+        await getResoniteCurrentUserSessionWindows(currentUser);
+    return sessions.map((session) => new Date(session.startTs).toJSON());
+}
+
+function getResoniteWindowOverlap(window, scope) {
+    const normalizedLocation = String(window?.location || '').trim();
+    if (!normalizedLocation || normalizedLocation !== scope.location) {
+        return null;
+    }
+
+    const startTs = Number(window?.startTs || 0);
+    const endTs = Number(window?.endTs || 0);
+    if (startTs <= 0 || endTs <= 0 || endTs <= startTs) {
+        return null;
+    }
+
+    if (!scope.hasExplicitWindow) {
+        return {
+            startTs,
+            endTs
+        };
+    }
+
+    const overlapStartTs = Math.max(startTs, scope.startTs);
+    const overlapEndTs = Math.min(endTs, scope.endTs);
+    if (overlapEndTs <= overlapStartTs) {
+        return null;
+    }
+
+    return {
+        startTs: overlapStartTs,
+        endTs: overlapEndTs
+    };
+}
+
+async function getResoniteInstanceParticipantWindows(input) {
+    const groupingTimeTolerance = 1 * 60 * 60 * 1000; // 1 hour
+    const scope = buildResoniteInstanceScope(input);
+    if (!scope.location) {
+        return [];
+    }
+
+    const trackedWindows = [];
+    const currentSessionByUserId = new Map();
+
+    const ensureSessionWindow = (
+        userId,
+        displayName,
+        createdAtIso,
+        createdAtTs,
+        location
+    ) => {
+        const normalizedUserId = String(userId || '').trim();
+        const normalizedLocation = String(location || '').trim();
+        if (
+            !normalizedUserId ||
+            !isCountableResoniteLocation(normalizedLocation)
+        ) {
+            return null;
+        }
+
+        let currentWindow = currentSessionByUserId.get(normalizedUserId);
+        if (
+            !currentWindow ||
+            currentWindow.location !== normalizedLocation ||
+            createdAtTs - currentWindow.endTs > groupingTimeTolerance
+        ) {
+            currentWindow = {
+                userId: normalizedUserId,
+                displayName: String(displayName || '').trim(),
+                location: normalizedLocation,
+                startTs: Date.parse(createdAtIso),
+                endTs: createdAtTs
+            };
+            currentSessionByUserId.set(normalizedUserId, currentWindow);
+
+            if (normalizedLocation === scope.location) {
+                trackedWindows.push(currentWindow);
+            }
+            return normalizedLocation === scope.location ? currentWindow : null;
+        }
+
+        currentWindow.endTs = createdAtTs;
+        if (!currentWindow.displayName && displayName) {
+            currentWindow.displayName = String(displayName).trim();
+        }
+        return normalizedLocation === scope.location ? currentWindow : null;
+    };
+
+    await sqliteService.execute(
+        (dbRow) => {
+            const [
+                createdAtIso,
+                createdAtTs,
+                userId,
+                displayName,
+                location,
+                time,
+                previousLocation,
+                eventType
+            ] = dbRow;
+            const duration = Number(time || 0);
+
+            if (eventType === 'GPS') {
+                const previousWindow = ensureSessionWindow(
+                    userId,
+                    displayName,
+                    createdAtIso,
+                    createdAtTs,
+                    previousLocation
+                );
+                if (previousWindow && duration > 0) {
+                    previousWindow.endTs = Math.max(
+                        previousWindow.endTs,
+                        previousWindow.startTs + duration,
+                        createdAtTs
+                    );
+                }
+
+                ensureSessionWindow(
+                    userId,
+                    displayName,
+                    createdAtIso,
+                    createdAtTs,
+                    location
+                );
+                return;
+            }
+
+            const window = ensureSessionWindow(
+                userId,
+                displayName,
+                createdAtIso,
+                createdAtTs,
+                location
+            );
+            if (window && eventType === 'Offline' && duration > 0) {
+                window.endTs = Math.max(
+                    window.endTs,
+                    window.startTs + duration,
+                    createdAtTs
+                );
+            }
+        },
+        `SELECT created_at, strftime('%s', created_at) * 1000 AS created_at_ts, user_id, display_name, location, time, previous_location, event_type
+         FROM (
+             SELECT created_at, user_id, display_name, location, time, NULL AS previous_location, type AS event_type
+             FROM ${dbVars.userPrefix}_feed_online_offline
+             WHERE location = @location
+                 AND type IN ('Online', 'Offline')
+             UNION ALL
+             SELECT created_at, user_id, display_name, location, time, previous_location, 'GPS' AS event_type
+             FROM ${dbVars.userPrefix}_feed_gps
+             WHERE location = @location OR previous_location = @location
+         )
+         ORDER BY user_id ASC, created_at ASC`,
+        {
+            '@location': scope.location
+        }
+    );
+
+    return trackedWindows
+        .map((window) => {
+            const overlap = getResoniteWindowOverlap(window, scope);
+            if (!overlap) {
+                return null;
+            }
+
+            return {
+                userId: window.userId,
+                displayName: window.displayName,
+                location: window.location,
+                startTs: overlap.startTs,
+                endTs: overlap.endTs
+            };
+        })
+        .filter(Boolean)
+        .sort((left, right) => {
+            if (left.startTs !== right.startTs) {
+                return left.startTs - right.startTs;
+            }
+            return String(left.userId || '').localeCompare(
+                String(right.userId || '')
+            );
+        });
+}
+
+async function getResonitePlayersFromInstance(input) {
+    const windows = await getResoniteInstanceParticipantWindows(input);
+    const players = new Map();
+
+    for (const window of windows) {
+        const key = String(window.userId || window.displayName || '').trim();
+        if (!key) {
+            continue;
+        }
+
+        const duration = Math.max(0, window.endTs - window.startTs);
+        const createdAtIso = new Date(window.startTs).toJSON();
+        const existing = players.get(key);
+        if (existing) {
+            existing.time += duration;
+            existing.count += 1;
+            if (window.startTs < Date.parse(existing.created_at || '')) {
+                existing.created_at = createdAtIso;
+            }
+            if (!existing.displayName && window.displayName) {
+                existing.displayName = window.displayName;
+            }
+            continue;
+        }
+
+        players.set(key, {
+            created_at: createdAtIso,
+            displayName: window.displayName || window.userId,
+            userId: window.userId,
+            time: duration,
+            count: 1
+        });
+    }
+
+    return players;
+}
+
+async function getResonitePlayerDetailFromInstance(input) {
+    const windows = await getResoniteInstanceParticipantWindows(input);
+    return windows.map((window) => ({
+        created_at: new Date(window.endTs).toJSON(),
+        display_name: window.displayName || window.userId,
+        user_id: window.userId,
+        time: Math.max(0, window.endTs - window.startTs)
+    }));
+}
+
 async function getResonitePresenceStats(input) {
     const ref = {
         timeSpent: 0,
@@ -1826,6 +2300,21 @@ const gameLog = {
     },
 
     async getPlayersFromInstance(location) {
+        if (
+            typeof location === 'object' &&
+            String(location?.provider || '')
+                .trim()
+                .toLowerCase() === 'resonite'
+        ) {
+            return await getResonitePlayersFromInstance(location);
+        }
+
+        const normalizedLocation =
+            typeof location === 'string'
+                ? location
+                : String(
+                      location?.location || location?.instanceId || ''
+                  ).trim();
         var players = new Map();
         await sqliteService.execute(
             (dbRow) => {
@@ -1855,7 +2344,7 @@ const gameLog = {
             },
             `SELECT created_at, display_name, user_id, time, type FROM gamelog_join_leave WHERE location = @location`,
             {
-                '@location': location
+                '@location': normalizedLocation
             }
         );
         return players;
@@ -1866,6 +2355,21 @@ const gameLog = {
      * @returns {Promise<Array<{created_at: string, display_name: string, user_id: string, time: number}>>}
      */
     async getPlayerDetailFromInstance(location) {
+        if (
+            typeof location === 'object' &&
+            String(location?.provider || '')
+                .trim()
+                .toLowerCase() === 'resonite'
+        ) {
+            return await getResonitePlayerDetailFromInstance(location);
+        }
+
+        const normalizedLocation =
+            typeof location === 'string'
+                ? location
+                : String(
+                      location?.location || location?.instanceId || ''
+                  ).trim();
         const entries = [];
         await sqliteService.execute(
             (dbRow) => {
@@ -1881,7 +2385,7 @@ const gameLog = {
              WHERE location = @location AND type = 'OnPlayerLeft'
              ORDER BY created_at ASC`,
             {
-                '@location': location
+                '@location': normalizedLocation
             }
         );
         return entries;
@@ -2075,7 +2579,11 @@ const gameLog = {
      * @param endDate
      * @returns
      */
-    async getInstanceActivity(startDate, endDate) {
+    async getInstanceActivity(startDate, endDate, currentUser) {
+        if (getResoniteActivityCandidateIds(currentUser).length > 0) {
+            return getResoniteInstanceActivity(startDate, endDate, currentUser);
+        }
+
         const currentUserData = [];
         const detailData = new Map();
         await sqliteService.execute(
@@ -2127,7 +2635,11 @@ const gameLog = {
      * Get the All Date of Instance Activity for the current user
      * @returns {Promise<string[]>}
      */
-    async getDateOfInstanceActivity() {
+    async getDateOfInstanceActivity(currentUser) {
+        if (getResoniteActivityCandidateIds(currentUser).length > 0) {
+            return getResoniteInstanceActivityDates(currentUser);
+        }
+
         let result = [];
         await sqliteService.execute(
             (row) => {

@@ -30,7 +30,7 @@
                     <RefreshCw class="size-4" />
                     {{ t('dialog.user.actions.refresh') }}
                 </DropdownMenuItem>
-                <DropdownMenuItem @click="onCommand('Share')">
+                <DropdownMenuItem v-if="!isExternalUser" @click="onCommand('Share')">
                     <Share2 class="size-4" />
                     {{ t('dialog.user.actions.share') }}
                 </DropdownMenuItem>
@@ -59,6 +59,16 @@
                     <DropdownMenuItem @click="onCommand('Edit Pronouns')">
                         <Pencil class="size-4" />
                         {{ t('dialog.user.actions.edit_pronouns') }}
+                    </DropdownMenuItem>
+                </template>
+                <template v-else-if="isExternalUser">
+                    <DropdownMenuItem @click="onCommand('Edit Note Memo')">
+                        <Pencil class="size-4" />
+                        {{ t('dialog.user.actions.edit_note_memo') }}
+                    </DropdownMenuItem>
+                    <DropdownMenuItem v-if="userDialog.isFriend" @click="onCommand('Previous Instances')">
+                        <LineChart class="size-4" />
+                        {{ t('dialog.user.actions.show_previous_instances') }}
                     </DropdownMenuItem>
                 </template>
                 <template v-else>
@@ -284,6 +294,11 @@
     const { isGameRunning } = storeToRefs(useGameStore());
     const { lastLocation } = storeToRefs(useLocationStore());
     const { checkCanInvite } = useInviteChecks();
+    const isExternalUser = computed(
+        () =>
+            Boolean(userDialog.value?.isExternal) ||
+            String(userDialog.value?.id || userDialog.value?.ref?.id || '').startsWith('resonite:')
+    );
 
     const hasRequest = computed(() => userDialog.value.incomingRequest || userDialog.value.outgoingRequest);
     const hasRisk = computed(

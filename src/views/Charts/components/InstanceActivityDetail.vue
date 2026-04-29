@@ -2,7 +2,12 @@
     <div style="width: 100%">
         <div class="mt-15" style="height: 25px">
             <transition name="el-fade-in-linear">
+                <div v-if="isResoniteActivity" v-show="!isLoading" class="flex items-center justify-center gap-2">
+                    <img :src="resoniteProviderIconUrl" alt="Resonite" class="size-4 shrink-0" />
+                    <span class="truncate text-center" v-html="renderedActivityLocation"></span>
+                </div>
                 <Location
+                    v-else
                     v-show="!isLoading"
                     class="flex items-center justify-center"
                     :location="activityDetailData[0]?.location"
@@ -26,6 +31,7 @@
 
     import { useAppearanceSettingsStore, useUserStore } from '../../../stores';
     import { timeToText } from '../../../shared/utils';
+    import { renderResoniteRichText } from '../../../shared/utils/resoniteRichText';
 
     import * as echarts from 'echarts';
     import { showUserDialog } from '../../../coordinators/userCoordinator';
@@ -55,6 +61,15 @@
     const usersFirstActivity = ref(null);
     const resizeObserver = ref(null);
     const hasChartData = computed(() => (props.activityDetailData || []).length > 0);
+    const resoniteProviderIconUrl = '/images/resonite/resonite_color.svg';
+    const isResoniteActivity = computed(() =>
+        (props.activityDetailData || []).some((item) => item?.provider === 'resonite')
+    );
+    const renderedActivityLocation = computed(() =>
+        renderResoniteRichText(
+            String(props.activityDetailData?.[0]?.displayLocation || props.activityDetailData?.[0]?.location || '')
+        )
+    );
 
     const startTimeStamp = computed(() => {
         return props.activityDetailData.find((item) => item.user_id === currentUser.value.id)?.joinTime.valueOf();

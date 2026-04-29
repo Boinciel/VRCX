@@ -728,7 +728,7 @@ describe('friend store - Resonite integration', () => {
     });
 
     describe('refreshResoniteFriends', () => {
-        test('VRChat friendship reconciliation ignores Resonite contacts without synthetic friend log entries', async () => {
+        test('VRChat friendship reconciliation ignores Resonite contacts even after they are mirrored into the friend log', async () => {
             const store = useFriendStore();
 
             watchState.isFriendsLoaded = true;
@@ -750,7 +750,7 @@ describe('friend store - Resonite integration', () => {
                 }
             });
 
-            expect(store.friendLog.has('resonite:U-1m51gsdtjge')).toBe(false);
+            expect(store.friendLog.has('resonite:U-1m51gsdtjge')).toBe(true);
 
             runUpdateFriendshipsFlow({
                 friends: [],
@@ -763,7 +763,7 @@ describe('friend store - Resonite integration', () => {
             await Promise.resolve();
 
             expect(mockFriendGetStatus).not.toHaveBeenCalled();
-            expect(store.friendLog.has('resonite:U-1m51gsdtjge')).toBe(false);
+            expect(store.friendLog.has('resonite:U-1m51gsdtjge')).toBe(true);
             expect(store.friends.has('resonite:U-1m51gsdtjge')).toBe(true);
             expect(
                 store.friendLogTable.data.find(
@@ -1448,7 +1448,7 @@ describe('friend store - Resonite integration', () => {
             await store.refreshResoniteFriends();
 
             expect(store.friends.has('resonite:U-1mImOh1WI08')).toBe(true);
-            expect(store.friendLog.has('resonite:U-1mImOh1WI08')).toBe(false);
+            expect(store.friendLog.has('resonite:U-1mImOh1WI08')).toBe(true);
             expect(
                 store.friendLogTable.data.find(
                     (entry) =>
@@ -2141,7 +2141,7 @@ describe('friend store - Resonite integration', () => {
             );
         });
 
-        test('does not record Resonite friend or unfriend history in the shared friend log', async () => {
+        test('records Resonite friend and unfriend history in the shared friend log', async () => {
             const store = useFriendStore();
             watchState.isFriendsLoaded = true;
 
@@ -2155,21 +2155,34 @@ describe('friend store - Resonite integration', () => {
                     id: 'resonite:u-history',
                     displayName: 'History User',
                     state: 'online',
+                    contactStatus: 'Accepted',
+                    isAccepted: true,
                     latestMessageTime: '2025-01-10T12:00:00.000Z'
                 },
                 resonite: {
+                    contactStatus: 'Accepted',
+                    isAccepted: true,
                     latestMessageTime: '2025-01-10T12:00:00.000Z'
                 }
             });
 
-            expect(store.friendLog.has('resonite:u-history')).toBe(false);
+            expect(store.friendLog.has('resonite:u-history')).toBe(true);
+            expect(
+                store.friends.get('resonite:u-history')?.ref?.$friendNumber
+            ).toBe(1);
             expect(
                 store.friendLogTable.data.find(
                     (entry) =>
                         entry.type === 'Friend' &&
                         entry.userId === 'resonite:u-history'
                 )
-            ).toBeUndefined();
+            ).toEqual(
+                expect.objectContaining({
+                    userId: 'resonite:u-history',
+                    displayName: 'History User',
+                    friendNumber: 1
+                })
+            );
 
             store.removeStaleResoniteFriends(new Set());
 
@@ -2180,7 +2193,12 @@ describe('friend store - Resonite integration', () => {
                         entry.type === 'Unfriend' &&
                         entry.userId === 'resonite:u-history'
                 )
-            ).toBeUndefined();
+            ).toEqual(
+                expect.objectContaining({
+                    userId: 'resonite:u-history',
+                    displayName: 'History User'
+                })
+            );
         });
 
         test('clears stale Resonite live metadata when pending offline commits', async () => {
@@ -2940,6 +2958,54 @@ describe('friend store - Resonite integration', () => {
                 resonite: {
                     currentSessionHash: 'S-second-new',
                     currentSessionName: 'Shared Session'
+                }
+            });
+
+            expect(store.resoniteFriendsInSameSession).toHaveLength(1);
+            expect(store.resoniteFriendsInSameSession[0]).toHaveLength(2);
+        });
+
+        test('groups private Resonite sessions together when no stable session id is available', () => {
+            const store = useFriendStore();
+
+            store.upsertResoniteFriend({
+                id: 'resonite:u-private-1',
+                name: 'PrivateUser1',
+                state: 'online',
+                provider: 'resonite',
+                isExternal: true,
+                ref: {
+                    id: 'resonite:u-private-1',
+                    displayName: 'PrivateUser1',
+                    location: 'Private',
+                    resonite: {
+                        accessLevel: 'private',
+                        locationName: 'Private'
+                    }
+                },
+                resonite: {
+                    accessLevel: 'private',
+                    locationName: 'Private'
+                }
+            });
+            store.upsertResoniteFriend({
+                id: 'resonite:u-private-2',
+                name: 'PrivateUser2',
+                state: 'online',
+                provider: 'resonite',
+                isExternal: true,
+                ref: {
+                    id: 'resonite:u-private-2',
+                    displayName: 'PrivateUser2',
+                    location: 'Private',
+                    resonite: {
+                        accessLevel: 'private',
+                        locationName: 'Private'
+                    }
+                },
+                resonite: {
+                    accessLevel: 'private',
+                    locationName: 'Private'
                 }
             });
 

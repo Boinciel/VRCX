@@ -13,6 +13,7 @@ import {
 import {
     getResoniteCurrentSessionHash,
     getResoniteSessionGroupingKey,
+    isResoniteContactLike,
     normalizeResoniteHandle,
     stripResonitePrefix
 } from '../shared/utils/resonite';
@@ -444,13 +445,6 @@ export const useFriendStore = defineStore('Friend', () => {
             const resolvedSession = currentSessionHash
                 ? getResoniteSessionByHash(currentSessionHash)
                 : null;
-            const sessionGroupKey = getResoniteSessionGroupingKey(
-                friend,
-                resolvedSession
-            );
-            if (!sessionGroupKey) {
-                return;
-            }
             const accessLevel = String(
                 resolvedSession?.accessLevel ||
                     friend.resonite?.accessLevel ||
@@ -459,7 +453,22 @@ export const useFriendStore = defineStore('Friend', () => {
                     friend.ref?.resonite?.realtime?.accessLevel ||
                     ''
             ).trim();
-            if (accessLevel === 'private') {
+            const normalizedLocationName = firstNonEmptyString(
+                friend.resonite?.currentSessionName,
+                friend.resonite?.locationName,
+                friend.ref?.resonite?.currentSessionName,
+                friend.ref?.resonite?.locationName,
+                friend.ref?.location
+            )
+                .trim()
+                .toLowerCase();
+            const sessionGroupKey =
+                getResoniteSessionGroupingKey(friend, resolvedSession) ||
+                (accessLevel === 'private' ||
+                normalizedLocationName === 'private'
+                    ? 'resonite-private'
+                    : '');
+            if (!sessionGroupKey) {
                 return;
             }
             if (!sessionGroups[sessionGroupKey]) {
@@ -2360,11 +2369,152 @@ export const useFriendStore = defineStore('Friend', () => {
         return 'active';
     }
 
+    function cloneResoniteFriendSnapshot(friendCtx) {
+        if (!friendCtx) {
+            return null;
+        }
+
+        return {
+            id: friendCtx.id,
+            name: friendCtx.name,
+            ref: {
+                ...(friendCtx.ref || {})
+            },
+            resonite: {
+                ...(friendCtx.resonite || {})
+            }
+        };
+    }
+
+    function getResoniteFriendLogDisplayName(friendCtx) {
+        return firstNonEmptyString(
+            friendCtx?.ref?.displayName,
+            friendCtx?.name,
+            friendCtx?.id
+        );
+    }
+
+    function getResoniteFriendLogTrustLevel(friendCtx) {
+        return firstNonEmptyString(
+            friendCtx?.ref?.$trustLevel,
+            friendCtx?.ref?.trustLevel,
+            'Resonite'
+        );
+    }
+
+    function removeResoniteFriendLogEntry(friendCtx) {
+        if (!friendCtx?.id) {
+            return;
+        }
+
+        const currentEntry = friendLog.get(friendCtx.id);
+        if (!currentEntry) {
+            if (friendCtx?.ref) {
+                friendCtx.ref.$friendNumber = 0;
+            }
+            return;
+        }
+
+        const friendLogHistory = {
+            created_at: new Date().toJSON(),
+            type: 'Unfriend',
+            userId: friendCtx.id,
+            displayName:
+                currentEntry.displayName ||
+                getResoniteFriendLogDisplayName(friendCtx)
+        };
+        friendLogTable.value.data.push(friendLogHistory);
+        database.addFriendLogHistory(friendLogHistory);
+        notificationStore.queueFriendLogNoty(friendLogHistory);
+        sharedFeedStore.addEntry(friendLogHistory);
+        friendLog.delete(friendCtx.id);
+        database.deleteFriendLogCurrent(friendCtx.id);
+
+        if (friendCtx?.ref) {
+            friendCtx.ref.$friendNumber = 0;
+        }
+
+        if (!appearanceSettingsStore.hideUnfriends) {
+            uiStore.notifyMenu('friend-log');
+        }
+    }
+
+    function syncResoniteFriendLogEntry(friendCtx) {
+        if (!friendCtx?.id) {
+            return;
+        }
+
+        const isTrackedRelationship = isResoniteContactLike(friendCtx);
+        const currentEntry = friendLog.get(friendCtx.id);
+
+        if (!isTrackedRelationship) {
+            removeResoniteFriendLogEntry(friendCtx);
+            return;
+        }
+
+        const displayName = getResoniteFriendLogDisplayName(friendCtx);
+        const trustLevel = getResoniteFriendLogTrustLevel(friendCtx);
+
+        if (currentEntry) {
+            friendCtx.ref.$friendNumber = Number(
+                currentEntry.friendNumber || 0
+            );
+            if (
+                currentEntry.displayName !== displayName ||
+                currentEntry.trustLevel !== trustLevel
+            ) {
+                const nextEntry = {
+                    ...currentEntry,
+                    displayName,
+                    trustLevel
+                };
+                friendLog.set(friendCtx.id, nextEntry);
+                database.setFriendLogCurrent(nextEntry);
+            }
+            return;
+        }
+
+        if (state.friendNumber === 0) {
+            state.friendNumber = friendLog.size;
+        }
+
+        const friendNumber = ++state.friendNumber;
+        friendCtx.ref.$friendNumber = friendNumber;
+        configRepository.setInt(
+            `VRCX_friendNumber_${userStore.currentUser.id}`,
+            state.friendNumber
+        );
+
+        const friendLogHistory = {
+            created_at: new Date().toJSON(),
+            type: 'Friend',
+            userId: friendCtx.id,
+            displayName,
+            friendNumber
+        };
+        friendLogTable.value.data.push(friendLogHistory);
+        database.addFriendLogHistory(friendLogHistory);
+        notificationStore.queueFriendLogNoty(friendLogHistory);
+        sharedFeedStore.addEntry(friendLogHistory);
+
+        const friendLogCurrent = {
+            userId: friendCtx.id,
+            displayName,
+            trustLevel,
+            friendNumber
+        };
+        friendLog.set(friendCtx.id, friendLogCurrent);
+        database.setFriendLogCurrent(friendLogCurrent);
+        uiStore.notifyMenu('friend-log');
+    }
+
     function applyResoniteFriendUpdate(
         existingFriend,
         normalizedIncoming,
         { emitFeed = true } = {}
     ) {
+        const previousFriendSnapshot =
+            cloneResoniteFriendSnapshot(existingFriend);
         const { refPatch, feedEntries } = buildResonitePresenceFeedUpdate(
             existingFriend,
             normalizedIncoming
@@ -2388,6 +2538,7 @@ export const useFriendStore = defineStore('Friend', () => {
             existingFriend.provider = normalizedIncoming.provider;
             existingFriend.isExternal = normalizedIncoming.isExternal;
             existingFriend.pendingOffline = false;
+            syncResoniteFriendLogEntry(existingFriend, previousFriendSnapshot);
 
             syncOpenResoniteUserDialog(existingFriend, {
                 refreshStats: feedEntries.length > 0
@@ -2412,6 +2563,7 @@ export const useFriendStore = defineStore('Friend', () => {
         });
 
         friends.set(normalizedIncoming.id, ctx);
+        syncResoniteFriendLogEntry(ctx, previousFriendSnapshot);
         syncOpenResoniteUserDialog(ctx, {
             refreshStats: feedEntries.length > 0
         });
@@ -2637,11 +2789,12 @@ export const useFriendStore = defineStore('Friend', () => {
     function removeStaleResoniteFriends(currentResoniteIds) {
         const friendIdsToRemove = [];
 
-        for (const [friendId] of friends) {
+        for (const [friendId, friendCtx] of friends) {
             if (
                 friendId.startsWith('resonite:') &&
                 !currentResoniteIds.has(friendId)
             ) {
+                removeResoniteFriendLogEntry(friendCtx);
                 friendIdsToRemove.push(friendId);
             }
         }

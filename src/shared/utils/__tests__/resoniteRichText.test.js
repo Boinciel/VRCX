@@ -1,4 +1,7 @@
-import { renderResoniteRichText } from '../resoniteRichText';
+import {
+    renderResoniteRichText,
+    stripResoniteRichText
+} from '../resoniteRichText';
 
 describe('renderResoniteRichText', () => {
     test('escapes plain html input', () => {
@@ -191,5 +194,12 @@ describe('renderResoniteRichText', () => {
     test('ignores invalid hex color lengths', () => {
         const output = renderResoniteRichText('<color=#12345>text</color>');
         expect(output).toBe('&lt;color=#12345&gt;text&lt;/color&gt;');
+    });
+
+    test('strips Resonite rich-text tags to plain text', () => {
+        const output = stripResoniteRichText(
+            '<color=#E774EB>Soft</color> Sea <size=75%>of Stars</size>'
+        );
+        expect(output).toBe('Soft Sea of Stars');
     });
 });
