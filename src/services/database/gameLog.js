@@ -35,6 +35,105 @@ async function getResonitePresenceStats(input) {
         userId: input.id,
         previousDisplayNames: new Map()
     };
+    const sharedOnly = input?.sharedOnly === true;
+    const sharedWithUserId = String(input?.sharedWithUserId || '').trim();
+
+    if (sharedOnly && sharedWithUserId) {
+        const targetSessions = await getResoniteSessionWindowsByUserId(
+            input.id
+        );
+        const currentUserSessions =
+            await getResoniteSessionWindowsByUserId(sharedWithUserId);
+        const overlapWindows = [];
+
+        for (const targetSession of targetSessions) {
+            const targetLocation = String(targetSession?.location || '').trim();
+            const targetStartTs = Number(targetSession?.startTs || 0);
+            const targetEndTs = Number(targetSession?.endTs || 0);
+
+            if (!targetLocation || targetStartTs <= 0 || targetEndTs <= 0) {
+                continue;
+            }
+
+            for (const currentUserSession of currentUserSessions) {
+                if (
+                    String(currentUserSession?.location || '').trim() !==
+                    targetLocation
+                ) {
+                    continue;
+                }
+
+                const overlapStartTs = Math.max(
+                    targetStartTs,
+                    Number(currentUserSession?.startTs || 0)
+                );
+                const overlapEndTs = Math.min(
+                    targetEndTs,
+                    Number(currentUserSession?.endTs || 0)
+                );
+
+                if (overlapStartTs >= overlapEndTs) {
+                    continue;
+                }
+
+                overlapWindows.push({
+                    location: targetLocation,
+                    startTs: overlapStartTs,
+                    endTs: overlapEndTs
+                });
+            }
+        }
+
+        const mergedWindowsByLocation = new Map();
+        for (const overlapWindow of overlapWindows) {
+            const locationWindows =
+                mergedWindowsByLocation.get(overlapWindow.location) || [];
+            locationWindows.push(overlapWindow);
+            mergedWindowsByLocation.set(
+                overlapWindow.location,
+                locationWindows
+            );
+        }
+
+        const mergedWindows = [];
+        for (const locationWindows of mergedWindowsByLocation.values()) {
+            locationWindows.sort((left, right) => left.startTs - right.startTs);
+
+            for (const locationWindow of locationWindows) {
+                const previousWindow = mergedWindows[mergedWindows.length - 1];
+                if (
+                    previousWindow &&
+                    previousWindow.location === locationWindow.location &&
+                    locationWindow.startTs <= previousWindow.endTs
+                ) {
+                    previousWindow.endTs = Math.max(
+                        previousWindow.endTs,
+                        locationWindow.endTs
+                    );
+                    continue;
+                }
+
+                mergedWindows.push({ ...locationWindow });
+            }
+        }
+
+        mergedWindows.sort((left, right) => right.endTs - left.endTs);
+
+        if (mergedWindows.length > 0) {
+            ref.lastSeen = new Date(mergedWindows[0].endTs).toJSON();
+            ref.joinCount = new Set(
+                mergedWindows.map((window) => window.location)
+            ).size;
+            ref.timeSpent = mergedWindows.reduce(
+                (totalTime, window) =>
+                    totalTime + Math.max(0, window.endTs - window.startTs),
+                0
+            );
+        }
+
+        return ref;
+    }
+
     const params = {
         '@userId': input.id
     };

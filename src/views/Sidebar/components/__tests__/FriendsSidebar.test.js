@@ -81,7 +81,8 @@ const mocks = vi.hoisted(() => ({
         success: vi.fn(),
         error: vi.fn(),
         warning: vi.fn()
-    }
+    },
+    getResoniteSessionByHash: vi.fn(() => null)
 }));
 
 vi.mock('pinia', async (importOriginal) => {
@@ -157,6 +158,11 @@ vi.mock('../../../../api', () => ({
     worldRequest: mocks.worldRequest,
     instanceRequest: mocks.instanceRequest,
     userRequest: mocks.userRequest
+}));
+
+vi.mock('../../../../services/resoniteRealtime', () => ({
+    getResoniteSessionByHash: (...args) =>
+        mocks.getResoniteSessionByHash(...args)
 }));
 
 vi.mock('vue-sonner', () => ({
@@ -324,6 +330,9 @@ describe('FriendsSidebar.vue', () => {
 
     test('renders grouped Resonite session rows when grouping is enabled', async () => {
         mocks.appearanceStore.isSidebarGroupByInstance.value = true;
+        mocks.getResoniteSessionByHash.mockReturnValue({
+            accessLevel: 'anyone'
+        });
         mocks.friendStore.resoniteFriendsInSameSession.value = [
             [
                 {
@@ -338,7 +347,8 @@ describe('FriendsSidebar.vue', () => {
                     },
                     resonite: {
                         currentSessionHash: 'S-shared',
-                        currentSessionName: 'Shared Session'
+                        currentSessionName:
+                            '<color=#E774EB>Shared</color> <color=#E675EA>Session</color>'
                     }
                 },
                 {
@@ -364,9 +374,43 @@ describe('FriendsSidebar.vue', () => {
         await nextTick();
 
         expect(wrapper.text()).toContain('side_panel.same_instance');
-        expect(wrapper.text()).toContain('Shared Session');
+        expect(wrapper.text()).toContain('Shared Session - Public');
+        expect(wrapper.text()).not.toContain('<color=#E774EB>');
         expect(wrapper.findAll('[data-testid="friend-item"]')).toHaveLength(2);
         expect(wrapper.text()).toContain('(2)');
+    });
+
+    test('hide grouped friends also excludes grouped Resonite contacts from the online section', async () => {
+        mocks.appearanceStore.isSidebarGroupByInstance.value = true;
+        mocks.appearanceStore.isHideFriendsInSameInstance.value = true;
+
+        const groupedFriend = {
+            id: 'resonite:u-a',
+            state: 'online',
+            provider: 'resonite',
+            isExternal: true,
+            ref: {
+                resonite: {
+                    currentSessionHash: 'S-shared'
+                }
+            },
+            resonite: {
+                currentSessionHash: 'S-shared',
+                currentSessionName: 'Shared Session'
+            }
+        };
+
+        mocks.friendStore.onlineFriends.value = [groupedFriend];
+        mocks.friendStore.resoniteFriendsInSameSession.value = [
+            [groupedFriend]
+        ];
+
+        const wrapper = mount(FriendsSidebar);
+        await flushPromises();
+        await nextTick();
+
+        expect(wrapper.text()).toContain('side_panel.same_instance');
+        expect(wrapper.findAll('[data-testid="friend-item"]')).toHaveLength(1);
     });
 
     test('renders Resonite Me through the shared friend item path', async () => {

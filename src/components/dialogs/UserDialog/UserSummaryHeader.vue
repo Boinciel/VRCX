@@ -1,6 +1,6 @@
 <template>
     <div style="display: flex">
-        <div style="flex: none; height: 120px; width: 160px">
+        <div :style="mainImageContainerStyle">
             <img
                 v-if="
                     !userDialog.loading &&
@@ -9,7 +9,7 @@
                 "
                 class="cursor-pointer"
                 :src="userDialog.ref.profilePicOverrideThumbnail || userDialog.ref.profilePicOverride"
-                style="height: 120px; width: 213.33px; border-radius: var(--radius-xl); object-fit: cover"
+                :style="mainImageStyle"
                 @click="showFullscreenImageDialog(userDialog.ref.profilePicOverride)"
                 @error="profileImageError = true"
                 loading="lazy" />
@@ -17,14 +17,14 @@
                 v-else-if="!userDialog.loading && !profileImageError && userDialog.ref.currentAvatarThumbnailImageUrl"
                 class="cursor-pointer"
                 :src="userDialog.ref.currentAvatarThumbnailImageUrl"
-                style="height: 120px; width: 160px; border-radius: var(--radius-xl); object-fit: cover"
+                :style="mainImageStyle"
                 @click="showFullscreenImageDialog(userDialog.ref.currentAvatarImageUrl)"
                 @error="profileImageError = true"
                 loading="lazy" />
             <div
                 v-else-if="!userDialog.loading"
                 class="flex items-center justify-center bg-muted"
-                style="height: 120px; width: 160px; border-radius: var(--radius-xl)">
+                :style="mainImageStyle">
                 <Image class="size-8 text-muted-foreground" />
             </div>
         </div>
@@ -98,9 +98,9 @@
                     <TooltipWrapper
                         v-if="isExternalUser && resoniteProfile?.isVerified"
                         side="top"
-                        content="Verified on Resonite">
-                        <Badge variant="outline" class="text-[#3b82f6] border-[#3b82f6]!">
-                            <IdCard class="h-4 w-4" /> Verified
+                        content="Registered user on Resonite">
+                        <Badge variant="outline" class="text-[#f63b64] border-[#f63b64]!">
+                            <Check class="h-4 w-4" />
                         </Badge>
                     </TooltipWrapper>
                     <TooltipWrapper
@@ -204,6 +204,38 @@
                     >
                 </div>
                 <div class="mt-1">
+                    <TooltipWrapper
+                        v-for="badge in resoniteRenderedBadges"
+                        :key="`resonite-${badge.id}`"
+                        side="top"
+                        :content="badge.label || badge.tag">
+                        <div style="display: inline-block">
+                            <img
+                                v-if="badge.imageUrl"
+                                class="cursor-pointer"
+                                :src="badge.imageUrl"
+                                :alt="badge.label"
+                                style="
+                                    flex: none;
+                                    height: 32px;
+                                    width: 32px;
+                                    border-radius: var(--radius-sm);
+                                    object-fit: cover;
+                                    margin-top: 6px;
+                                    margin-right: 6px;
+                                "
+                                loading="lazy"
+                                decoding="async"
+                                @click="showFullscreenImageDialog(badge.imageUrl)" />
+                            <Badge
+                                v-else
+                                variant="outline"
+                                class="inline-flex max-w-40 items-center truncate text-xs"
+                                style="margin-top: 6px; margin-right: 6px">
+                                {{ badge.label }}
+                            </Badge>
+                        </div>
+                    </TooltipWrapper>
                     <TooltipWrapper v-for="badge in userDialog.ref.badges" :key="badge.badgeId" side="top">
                         <template #content>
                             <span>{{ badge.badgeName }}</span>
@@ -271,7 +303,7 @@
                 </div>
             </div>
 
-            <div v-if="userDialog.ref.userIcon" style="flex: none; margin-right: 8px">
+            <div v-if="!isExternalUser && userDialog.ref.userIcon" style="flex: none; margin-right: 8px">
                 <img
                     v-if="!userIconError"
                     class="cursor-pointer"
@@ -294,13 +326,32 @@
 </template>
 
 <script setup>
-    import { Apple, ChevronDown, IdCard, Image, Monitor, Shield, Smartphone, UserPlus, Users } from 'lucide-vue-next';
+    import {
+        Apple,
+        Check,
+        ChevronDown,
+        IdCard,
+        Image,
+        Monitor,
+        RectangleGoggles,
+        Shield,
+        Smartphone,
+        UserPlus,
+        Users
+    } from 'lucide-vue-next';
     import { computed, ref, watch } from 'vue';
     import { storeToRefs } from 'pinia';
     import { useI18n } from 'vue-i18n';
 
-    import { formatDateFilter, languageClass, openDiscordProfile } from '../../../shared/utils';
+    import {
+        convertFileUrlToImageUrl,
+        formatDateFilter,
+        languageClass,
+        openDiscordProfile
+    } from '../../../shared/utils';
     import { renderResoniteRichText } from '../../../shared/utils/resoniteRichText';
+    import { resolveResoniteBadges } from '../../../services/resoniteBadges';
+    import { fetchResoniteInventoryRecordByPath } from '../../../services/resoniteInventory';
     import { useUserDisplay } from '../../../composables/useUserDisplay';
     import { Popover, PopoverContent, PopoverTrigger } from '../../ui/popover';
     import { useGalleryStore, useUserStore } from '../../../stores';
@@ -347,6 +398,17 @@
             userDialog.value.isExternal ||
             String(userDialog.value.id || userDialog.value.ref?.id || '').startsWith('resonite:')
     );
+    const mainImageContainerStyle = computed(() => ({
+        flex: 'none',
+        height: '120px',
+        width: isExternalUser.value ? '120px' : '160px'
+    }));
+    const mainImageStyle = computed(() => ({
+        height: '120px',
+        width: isExternalUser.value ? '120px' : '160px',
+        borderRadius: 'var(--radius-xl)',
+        objectFit: 'cover'
+    }));
     const resoniteProfile = computed(() => userDialog.value.ref?.resonite || {});
     const resolvedDisplayName = computed(() => {
         const dialogId = firstNonEmptyString(userDialog.value.id, userDialog.value.ref?.id);
@@ -396,7 +458,7 @@
         } else if (hint.includes(' of vr') || hint.endsWith(' vr')) {
             label = 'VR';
             className = 'border-emerald-400! text-emerald-400';
-            iconComponent = Monitor;
+            iconComponent = RectangleGoggles;
         } else if (hint.includes(' of screen') || hint.includes('screen')) {
             label = 'PC';
             className = 'border-platform-pc! text-platform-pc';
@@ -416,6 +478,71 @@
             tooltip: [label, appVersion].filter(Boolean).join(' · ')
         };
     });
+    const resoniteBaseBadges = computed(() =>
+        isExternalUser.value
+            ? resolveResoniteBadges({
+                  tags: Array.isArray(resoniteProfile.value?.tags) ? resoniteProfile.value.tags : [],
+                  displayBadges: Array.isArray(resoniteProfile.value?.profile?.displayBadges)
+                      ? resoniteProfile.value.profile.displayBadges
+                      : [],
+                  registrationDate: firstNonEmptyString(resoniteProfile.value?.registrationDate)
+              })
+            : []
+    );
+    const resoniteRenderedBadges = ref([]);
+    let resoniteBadgeResolutionRunId = 0;
+
+    watch(
+        [resoniteBaseBadges, () => firstNonEmptyString(resoniteProfile.value?.userId)],
+        async ([baseBadges, resoniteUserId]) => {
+            const resolutionRunId = ++resoniteBadgeResolutionRunId;
+            resoniteRenderedBadges.value = baseBadges;
+
+            if (!Array.isArray(baseBadges) || baseBadges.length === 0) {
+                return;
+            }
+
+            const resolvedBadges = await Promise.all(
+                baseBadges.map(async (badge) => {
+                    if (badge?.imageUrl || !badge?.inventoryOwnerId || !badge?.inventoryPath) {
+                        return badge;
+                    }
+
+                    try {
+                        const record = await fetchResoniteInventoryRecordByPath({
+                            userId: firstNonEmptyString(resoniteUserId, badge.inventoryOwnerId),
+                            ownerId: badge.inventoryOwnerId,
+                            path: badge.inventoryPath
+                        });
+                        const imageUrl = firstNonEmptyString(
+                            record?.thumbnailUrl,
+                            convertFileUrlToImageUrl(record?.assetUri)
+                        );
+
+                        if (!imageUrl) {
+                            return badge;
+                        }
+
+                        return {
+                            ...badge,
+                            assetUri: firstNonEmptyString(badge.assetUri, record?.assetUri),
+                            imageUrl,
+                            isKnown: true
+                        };
+                    } catch {
+                        return badge;
+                    }
+                })
+            );
+
+            if (resolutionRunId !== resoniteBadgeResolutionRunId) {
+                return;
+            }
+
+            resoniteRenderedBadges.value = resolvedBadges;
+        },
+        { immediate: true }
+    );
 
     watch(
         () => userDialog.value.id,
@@ -459,12 +586,12 @@
     }
 
     .provider-badge-icon--resonite {
-        mask-image: url(/images/icons/resonite.svg);
-        -webkit-mask-image: url(/images/icons/resonite.svg);
+        mask-image: url(/images/resonite/resonite.svg);
+        -webkit-mask-image: url(/images/resonite/resonite.svg);
     }
 
     .provider-badge-icon--recon {
-        mask-image: url(/images/icons/recon.svg);
-        -webkit-mask-image: url(/images/icons/recon.svg);
+        mask-image: url(/images/resonite/recon.svg);
+        -webkit-mask-image: url(/images/resonite/recon.svg);
     }
 </style>

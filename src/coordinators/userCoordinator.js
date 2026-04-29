@@ -327,6 +327,10 @@ export function showUserDialog(userId) {
             currentUser,
             advancedSettingsStore.resoniteApiKey
         );
+    const hasResoniteContactRelationship =
+        isExternalUser &&
+        !isCurrentResoniteSelf &&
+        isResoniteContactLike(friendCtx);
 
     const isMainDialogOpen = uiStore.openDialog({
         type: 'user',
@@ -345,7 +349,8 @@ export function showUserDialog(userId) {
                 friendCtx,
                 dialogRef: D.ref,
                 friendStore,
-                apiKey: advancedSettingsStore.resoniteApiKey
+                apiKey: advancedSettingsStore.resoniteApiKey,
+                persistToStore: hasResoniteContactRelationship
             });
         }
         uiStore.setDialogCrumbLabel('user', D.id, D.ref?.displayName || D.id);
@@ -357,6 +362,10 @@ export function showUserDialog(userId) {
     D.id = userId;
     D.memo = '';
     D.note = '';
+    D.ref = reactive(createDefaultUserRef({ id: userId }));
+    D.$location = {};
+    D.users = [];
+    D.$homeLocationName = '';
     getUserMemo(userId).then((memo) => {
         if (memo.userId === userId) {
             D.memo = memo.memo;
@@ -425,8 +434,6 @@ export function showUserDialog(userId) {
         const selfResonitePresence = isCurrentResoniteSelf
             ? currentUser.$resonitePresence || null
             : null;
-        const hasResoniteContactRelationship =
-            !isCurrentResoniteSelf && isResoniteContactLike(friendCtx);
         const displayName =
             String(
                 friendCtx?.ref?.displayName ||
@@ -443,8 +450,15 @@ export function showUserDialog(userId) {
                 ''
         );
         const location = String(
-            friendCtx?.ref?.location || selfResonitePresence?.locationName || ''
-        );
+            friendCtx?.ref?.location ||
+                friendCtx?.resonite?.locationName ||
+                friendCtx?.resonite?.currentSessionName ||
+                friendCtx?.ref?.resonite?.locationName ||
+                friendCtx?.ref?.resonite?.currentSessionName ||
+                selfResonitePresence?.locationName ||
+                selfResonitePresence?.currentSessionName ||
+                ''
+        ).trim();
         const status = String(
             friendCtx?.ref?.status || selfResonitePresence?.status || 'busy'
         );
@@ -535,13 +549,26 @@ export function showUserDialog(userId) {
         D.isMuteChat = false;
         D.isFavorite = false;
 
-        database.getUserStats(D.ref, false).then((ref1) => {
-            if (ref1.userId === D.id) {
-                D.lastSeen = ref1.lastSeen;
-                D.joinCount = ref1.joinCount;
-                D.timeSpent = ref1.timeSpent;
-            }
-        });
+        const sharedWithResoniteUserId = getSharedResoniteHistoryUserId(
+            currentUser,
+            advancedSettingsStore.resoniteApiKey
+        );
+        database
+            .getUserStats(
+                {
+                    ...D.ref,
+                    sharedOnly: Boolean(sharedWithResoniteUserId),
+                    sharedWithUserId: sharedWithResoniteUserId
+                },
+                false
+            )
+            .then((ref1) => {
+                if (ref1.userId === D.id) {
+                    D.lastSeen = ref1.lastSeen;
+                    D.joinCount = ref1.joinCount;
+                    D.timeSpent = ref1.timeSpent;
+                }
+            });
 
         if (hasResoniteContactRelationship) {
             database
@@ -579,7 +606,8 @@ export function showUserDialog(userId) {
             friendCtx,
             dialogRef: D.ref,
             friendStore,
-            apiKey: advancedSettingsStore.resoniteApiKey
+            apiKey: advancedSettingsStore.resoniteApiKey,
+            persistToStore: hasResoniteContactRelationship
         });
         return;
     }
@@ -777,6 +805,7 @@ export function showSeededResoniteUserDialog(seed = {}) {
     const sessionName = String(seed.sessionName || locationName).trim();
     const sessionHash = String(seed.sessionHash || '').trim();
     const sessionId = String(seed.sessionId || '').trim();
+    const accessLevel = String(seed.accessLevel || '').trim();
     const isCurrentResoniteSelf = isCurrentResoniteSelfUser(
         externalId,
         currentUser,
@@ -821,7 +850,12 @@ export function showSeededResoniteUserDialog(seed = {}) {
                     String(
                         seed.state ?? providedFriendCtx?.ref?.state ?? 'offline'
                     ).trim() || 'offline',
-                location: locationName,
+                location: String(
+                    providedFriendCtx?.ref?.location ||
+                        sessionName ||
+                        locationName ||
+                        ''
+                ).trim(),
                 statusDescription: String(
                     seed.statusDescription ??
                         providedFriendCtx?.ref?.statusDescription ??
@@ -846,6 +880,7 @@ export function showSeededResoniteUserDialog(seed = {}) {
                     isVerified: Boolean(seed.isVerified),
                     tags: Array.isArray(seed.tags) ? seed.tags : [],
                     locationName,
+                    accessLevel,
                     currentSessionHash: sessionHash,
                     currentSessionName: sessionName,
                     userSessionId: sessionId,
@@ -869,6 +904,7 @@ export function showSeededResoniteUserDialog(seed = {}) {
                 isVerified: Boolean(seed.isVerified),
                 tags: Array.isArray(seed.tags) ? seed.tags : [],
                 locationName,
+                accessLevel,
                 currentSessionHash: sessionHash,
                 currentSessionName: sessionName,
                 userSessionId: sessionId,
@@ -890,7 +926,12 @@ export function showSeededResoniteUserDialog(seed = {}) {
         fallbackUserId: resoniteUserId
     });
     Object.assign(userDialog.ref, {
-        location: locationName,
+        location: String(
+            providedFriendCtx?.ref?.location ||
+                sessionName ||
+                locationName ||
+                ''
+        ).trim(),
         currentAvatarImageUrl: avatarUrl,
         currentAvatarThumbnailImageUrl: avatarUrl,
         profileImageUrl: avatarUrl,
@@ -1120,7 +1161,12 @@ function buildBaseResoniteDialogRef(
             String(baseRef?.state || friendCtx?.state || '').trim() ||
             'offline',
         status: String(baseRef?.status || friendCtx?.status || '').trim(),
-        location: String(baseRef?.location || '').trim(),
+        location: String(
+            baseRef?.location ||
+                baseResonite.currentSessionName ||
+                baseResonite.locationName ||
+                ''
+        ).trim(),
         traveling: String(
             friendCtx?.ref?.traveling || baseRef?.travelingToLocation || ''
         ).trim(),
@@ -1166,6 +1212,10 @@ function applyResoniteProfileToCurrentDialog({
             mergedFriend?.name,
             dialogRef.displayName,
             fallbackUserId
+        ),
+        location: firstNonEmptyString(
+            mergedFriend?.ref?.location,
+            dialogRef.location
         ),
         statusDescription: firstNonEmptyString(
             mergedFriend?.ref?.statusDescription,
@@ -1214,6 +1264,22 @@ function isCurrentResoniteSelfUser(userId, currentUser, apiKey) {
         .filter(Boolean);
 
     return candidateIds.includes(normalizedTargetId);
+}
+
+function getSharedResoniteHistoryUserId(currentUser, apiKey) {
+    const presence = currentUser?.$resonitePresence || {};
+    const linkedContactId = String(presence.linkedContactId || '').trim();
+    if (linkedContactId) {
+        return linkedContactId;
+    }
+
+    const linkedUserId = stripResonitePrefix(presence.linkedUserId);
+    if (linkedUserId) {
+        return `resonite:${linkedUserId}`;
+    }
+
+    const apiKeyUserId = parseResoniteUserIdFromApiKey(apiKey);
+    return apiKeyUserId ? `resonite:${apiKeyUserId}` : '';
 }
 
 /**

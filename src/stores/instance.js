@@ -112,6 +112,8 @@ export const useInstanceStore = defineStore('Instance', () => {
 
     const previousInstancesInfoDialog = ref({
         instanceId: '',
+        provider: 'vrchat',
+        displayLabel: '',
         lastId: '',
         visible: false
     });
@@ -324,17 +326,38 @@ export const useInstanceStore = defineStore('Instance', () => {
      *
      * @param instanceId
      */
-    function showPreviousInstancesInfoDialog(instanceId) {
+    function showPreviousInstancesInfoDialog(input) {
+        const instanceId =
+            typeof input === 'string'
+                ? input
+                : String(input?.location || input?.instanceId || '').trim();
+        const provider =
+            typeof input === 'string'
+                ? 'vrchat'
+                : String(input?.provider || 'vrchat')
+                      .trim()
+                      .toLowerCase() || 'vrchat';
+        const displayLabel =
+            typeof input === 'string'
+                ? ''
+                : String(
+                      input?.worldName || input?.name || input?.location || ''
+                  ).trim();
         previousInstancesInfoDialog.value.visible = true;
         previousInstancesInfoDialog.value.instanceId = instanceId;
+        previousInstancesInfoDialog.value.provider = provider;
+        previousInstancesInfoDialog.value.displayLabel = displayLabel;
         uiStore.openDialog({
             type: 'previous-instances-info',
             id: instanceId || '',
-            label: instanceId
-                ? formatPreviousInstancesInfoLabel(instanceId)
-                : ''
+            label:
+                provider === 'resonite'
+                    ? displayLabel || instanceId || ''
+                    : instanceId
+                      ? formatPreviousInstancesInfoLabel(instanceId)
+                      : ''
         });
-        if (instanceId) {
+        if (instanceId && provider !== 'resonite') {
             const location = parseLocation(instanceId);
             if (
                 location.worldId &&

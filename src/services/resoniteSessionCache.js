@@ -1,6 +1,69 @@
 export function createResoniteSessionCache({
     onSessionDataChanged = () => {}
 } = {}) {
+    function mergeSessionData(existingPayload, incomingPayload) {
+        if (!existingPayload || typeof existingPayload !== 'object') {
+            return incomingPayload;
+        }
+        if (!incomingPayload || typeof incomingPayload !== 'object') {
+            return existingPayload;
+        }
+
+        const merged = {
+            ...existingPayload,
+            ...incomingPayload
+        };
+
+        for (const key of Object.keys(existingPayload)) {
+            const incomingValue = incomingPayload[key];
+            const existingValue = existingPayload[key];
+
+            if (Array.isArray(existingValue)) {
+                if (
+                    !Array.isArray(incomingValue) ||
+                    incomingValue.length === 0
+                ) {
+                    merged[key] = existingValue;
+                }
+                continue;
+            }
+
+            if (
+                existingValue &&
+                typeof existingValue === 'object' &&
+                !Array.isArray(existingValue)
+            ) {
+                if (
+                    incomingValue &&
+                    typeof incomingValue === 'object' &&
+                    !Array.isArray(incomingValue)
+                ) {
+                    merged[key] = mergeSessionData(
+                        existingValue,
+                        incomingValue
+                    );
+                } else if (
+                    incomingValue === undefined ||
+                    incomingValue === null ||
+                    incomingValue === ''
+                ) {
+                    merged[key] = existingValue;
+                }
+                continue;
+            }
+
+            if (
+                incomingValue === undefined ||
+                incomingValue === null ||
+                incomingValue === ''
+            ) {
+                merged[key] = existingValue;
+            }
+        }
+
+        return merged;
+    }
+
     const cache = {
         sessionNamesByHash: new Map(),
         sessionDataByHash: new Map(),
@@ -24,7 +87,11 @@ export function createResoniteSessionCache({
                 return;
             }
 
-            cache.sessionDataByHash.set(normalizedHash, sessionPayload);
+            const existingPayload = cache.sessionDataByHash.get(normalizedHash);
+            cache.sessionDataByHash.set(
+                normalizedHash,
+                mergeSessionData(existingPayload, sessionPayload)
+            );
             onSessionDataChanged();
         },
 

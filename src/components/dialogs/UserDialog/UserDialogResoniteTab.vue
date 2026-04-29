@@ -227,13 +227,19 @@
                     <span class="text-muted-foreground">Location Name</span>
                     <span>{{ resonite.locationName || '-' }}</span>
 
+                    <span class="text-muted-foreground">Current Session</span>
+                    <span>{{ resonite.currentSessionName || '-' }}</span>
+
                     <span class="text-muted-foreground">Present</span>
                     <span>{{ formatBool(resonite.isPresent) }}</span>
 
-                    <span class="text-muted-foreground">User Session Id</span>
+                    <span class="text-muted-foreground">Status Session Id</span>
                     <span class="break-all">{{ resonite.userSessionId || '-' }}</span>
 
-                    <span class="text-muted-foreground">Compatibility Hash</span>
+                    <span class="text-muted-foreground">Session Hash (Transient)</span>
+                    <span class="break-all">{{ resonite.currentSessionHash || '-' }}</span>
+
+                    <span class="text-muted-foreground">Compatibility Hash (Legacy)</span>
                     <span class="break-all">{{ resonite.compatibilityHash || '-' }}</span>
                 </div>
             </div>

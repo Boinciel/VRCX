@@ -74,6 +74,42 @@
         0 0 4px color-mix(in oklch, var(--status-busy) 50%, transparent);
 }
 
+.status-icon.resonite-online::after,
+.status-icon.resonite-sociable::after,
+.status-icon.resonite-away::after,
+.status-icon.resonite-busy::after,
+.status-icon.resonite-invisible::after {
+    background-color: transparent;
+    background-position: center;
+    background-repeat: no-repeat;
+    background-size: contain;
+    border: none;
+    display: inline-block;
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+}
+
+.status-icon.resonite-online::after {
+    background-image: url(/images/resonite/presence_online.svg);
+}
+
+.status-icon.resonite-sociable::after {
+    background-image: url(/images/resonite/presence_sociable.svg);
+}
+
+.status-icon.resonite-away::after {
+    background-image: url(/images/resonite/presence_away.svg);
+}
+
+.status-icon.resonite-busy::after {
+    background-image: url(/images/resonite/presence_busy.svg);
+}
+
+.status-icon.resonite-invisible::after {
+    background-image: url(/images/resonite/presence_invisible.svg);
+}
+
 .accessible-status-indicators .status-icon::after {
     box-shadow: none;
 }
@@ -175,6 +211,42 @@ i.x-user-status.askme {
 
 i.x-user-status.busy {
     background: var(--status-busy);
+}
+
+i.x-user-status.resonite-online,
+i.x-user-status.resonite-sociable,
+i.x-user-status.resonite-away,
+i.x-user-status.resonite-busy,
+i.x-user-status.resonite-invisible {
+    background-color: transparent;
+    background-position: center;
+    background-repeat: no-repeat;
+    background-size: contain;
+    border: none;
+    display: inline-block;
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+}
+
+i.x-user-status.resonite-online {
+    background-image: url(/images/resonite/presence_online.svg);
+}
+
+i.x-user-status.resonite-sociable {
+    background-image: url(/images/resonite/presence_sociable.svg);
+}
+
+i.x-user-status.resonite-away {
+    background-image: url(/images/resonite/presence_away.svg);
+}
+
+i.x-user-status.resonite-busy {
+    background-image: url(/images/resonite/presence_busy.svg);
+}
+
+i.x-user-status.resonite-invisible {
+    background-image: url(/images/resonite/presence_invisible.svg);
 }
 
 .accessible-status-indicators i.x-user-status.joinme {

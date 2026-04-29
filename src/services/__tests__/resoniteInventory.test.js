@@ -27,6 +27,7 @@ vi.mock('../../shared/utils/common', () => ({
 }));
 
 import {
+    fetchResoniteInventoryRecordByPath,
     fetchResoniteInventoryOwnerDetails,
     fetchResoniteInventoryRecords,
     getResoniteInventoryOwnerPath,
@@ -89,6 +90,40 @@ describe('resoniteInventory service', () => {
         expect(result).toMatchObject({
             ownerId: 'G-group',
             absolutePath: 'Inventory\\Shared Folder'
+        });
+    });
+
+    test('fetchResoniteInventoryRecordByPath resolves records from forward-slash inventory paths', async () => {
+        mockWebApiExecute.mockResolvedValue({
+            status: 200,
+            data: JSON.stringify([
+                {
+                    id: 'R-honeybee',
+                    ownerId: 'G-Resonite',
+                    name: 'TheHoneybee',
+                    path: 'Inventory\\3D_Badges\\Patreon',
+                    recordType: 'object',
+                    thumbnailUri: 'resdb:///badge-preview.png'
+                }
+            ])
+        });
+
+        const result = await fetchResoniteInventoryRecordByPath({
+            userId: 'U-self',
+            ownerId: 'G-Resonite',
+            path: 'Inventory/3D_Badges/Patreon/TheHoneybee'
+        });
+
+        expect(mockWebApiExecute).toHaveBeenCalledWith({
+            url: 'https://api.resonite.com/groups/G-Resonite/records?path=Inventory%5C3D_Badges%5CPatreon',
+            method: 'GET',
+            headers: {
+                Authorization: 'Bearer session-key'
+            }
+        });
+        expect(result).toMatchObject({
+            id: 'R-honeybee',
+            absolutePath: 'Inventory\\3D_Badges\\Patreon\\TheHoneybee'
         });
     });
 

@@ -186,6 +186,18 @@ describe('FriendItem.vue', () => {
         expect(mocks.showUserDialog).not.toHaveBeenCalled();
     });
 
+    test('tolerates a transient null friend row without throwing or opening dialogs', async () => {
+        const wrapper = mountItem({
+            friend: null
+        });
+
+        await wrapper.get('div').trigger('click');
+
+        expect(wrapper.text()).toBe('');
+        expect(mocks.showUserDialog).not.toHaveBeenCalled();
+        expect(mocks.confirmDeleteFriend).not.toHaveBeenCalled();
+    });
+
     test('appends Resonite session access label for external world presence', () => {
         getResoniteSessionByHashMock.mockReturnValue({
             accessLevel: 'contactsplus'

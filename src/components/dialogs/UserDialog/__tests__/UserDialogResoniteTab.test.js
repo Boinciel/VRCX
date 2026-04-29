@@ -216,6 +216,25 @@ describe('UserDialogResoniteTab', () => {
         expect(wrapper.text()).toContain('builder, featured');
     });
 
+    test('demotes transient and legacy presence fields in labels', () => {
+        const { wrapper } = mountComponent({
+            currentSessionName: 'Quiet Headless World',
+            currentSessionHash: 'S-transient',
+            userSessionId: 'status-session-123',
+            compatibilityHash: 'compat-legacy',
+            realtime: {}
+        });
+
+        expect(wrapper.text()).toContain('Current Session');
+        expect(wrapper.text()).toContain('Quiet Headless World');
+        expect(wrapper.text()).toContain('Status Session Id');
+        expect(wrapper.text()).toContain('status-session-123');
+        expect(wrapper.text()).toContain('Session Hash (Transient)');
+        expect(wrapper.text()).toContain('S-transient');
+        expect(wrapper.text()).toContain('Compatibility Hash (Legacy)');
+        expect(wrapper.text()).toContain('compat-legacy');
+    });
+
     test('renders fallback values when enriched profile metadata is missing', () => {
         const { wrapper } = mountComponent({ realtime: {} });
 

@@ -268,9 +268,7 @@ export function normalizeResoniteFriend(entry, options = {}) {
             userStatus?.onlineStatus
         )
     );
-    const status = explicitPresenceSignals
-        ? normalizedStatus || 'offline'
-        : normalizedStatus;
+    const status = normalizedStatus || (explicitPresenceSignals ? '' : 'offline');
 
     const statusDescription =
         firstNonEmptyString(
@@ -389,11 +387,7 @@ export function normalizeResoniteFriend(entry, options = {}) {
     const userSessionId = firstNonEmptyString(
         userStatus?.userSessionId,
         entry.userSessionId,
-        payload?.userSessionId,
-        currentSession?.sessionId,
-        currentSession?.id,
-        primarySessionMetadata?.sessionId,
-        primarySessionMetadata?.sessionHash
+        payload?.userSessionId
     );
     const sessionType = firstNonEmptyString(
         userStatus?.sessionType,
@@ -448,9 +442,41 @@ export function normalizeResoniteFriend(entry, options = {}) {
         return null;
     }
 
-    const isOnline = ['online', 'busy', 'away', 'sociable'].includes(
-        status?.toLowerCase()
+    const currentSessionIndex = firstDefined(
+        userStatus?.currentSessionIndex,
+        entry.currentSessionIndex,
+        payload?.currentSessionIndex
     );
+    const normalizedStatusValue = String(status || '')
+        .trim()
+        .toLowerCase();
+    const hasActiveSessionPresence = Boolean(
+        isPresent ||
+            firstNonEmptyString(
+                currentSession?.id,
+                currentSession?.sessionId,
+                currentSession?.name,
+                currentSession?.sessionName,
+                currentSession?.locationName,
+                entry.currentSessionName,
+                payload?.currentSessionName,
+                entry.currentSessionHash,
+                payload?.currentSessionHash,
+                entry.broadcastKey,
+                payload?.broadcastKey
+            ) ||
+            (Array.isArray(sessions) && sessions.length > 0) ||
+            (typeof currentSessionIndex === 'number' && currentSessionIndex >= 0)
+    );
+    const isExplicitlyOnline = ['online', 'busy', 'away', 'sociable'].includes(
+        normalizedStatusValue
+    );
+    const isExplicitlyOffline = ['offline', 'invisible'].includes(
+        normalizedStatusValue
+    );
+    const isOnline =
+        isExplicitlyOnline ||
+        (!isExplicitlyOffline && hasActiveSessionPresence);
     const mappedVrcxStatus = mapResoniteStatusToVrcxStatus(status, isOnline);
     const mappedVrcxLocation = locationName || (isOnline ? '' : 'offline');
 
@@ -992,6 +1018,42 @@ export function mergeResoniteUserProfile(friend, userPayload) {
         return fallbackArray;
     }
 
+    function selectProfileArrayField(field, incomingValue, ...fallbackValues) {
+        const incomingArray = Array.isArray(incomingValue)
+            ? [...incomingValue]
+            : [];
+        const fallbackValue = fallbackValues.find((value) =>
+            Array.isArray(value)
+        );
+        const fallbackArray = Array.isArray(fallbackValue)
+            ? [...fallbackValue]
+            : [];
+
+        if (incomingArray.length > 0) {
+            recordProfileMergeTrace(
+                field,
+                'incoming',
+                'fetched-profile-authoritative',
+                fallbackArray,
+                incomingArray,
+                incomingArray
+            );
+            return incomingArray;
+        }
+
+        recordProfileMergeTrace(
+            field,
+            'existing',
+            fallbackArray.length > 0
+                ? 'fetched-profile-missing'
+                : 'no-profile-value',
+            fallbackArray,
+            incomingArray,
+            fallbackArray
+        );
+        return fallbackArray;
+    }
+
     const profileIconUrl = convertFileUrlToImageUrl(
         firstNonEmptyString(
             profile?.iconUrl,
@@ -1019,6 +1081,11 @@ export function mergeResoniteUserProfile(friend, userPayload) {
             profile?.description,
             friend?.resonite?.profile?.description
         ) || '';
+    const profileDisplayBadges = selectProfileArrayField(
+        'profile.displayBadges',
+        profile?.displayBadges,
+        friend?.resonite?.profile?.displayBadges
+    );
     const statusDescription =
         firstNonEmptyString(
             friend?.ref?.statusDescription,
@@ -1065,6 +1132,7 @@ export function mergeResoniteUserProfile(friend, userPayload) {
         profile: {
             ...(friend?.resonite?.profile || {}),
             iconUrl: avatarUrl,
+            displayBadges: profileDisplayBadges,
             tagline: profileTagline,
             description: profileDescription
         }

@@ -111,6 +111,55 @@ export async function resolveResoniteInventoryLink(record) {
     return normalizedRecord;
 }
 
+export async function fetchResoniteInventoryRecordByPath(options = {}) {
+    const ownerId = String(options?.ownerId || options?.userId || '').trim();
+    const userId = String(options?.userId || ownerId).trim();
+    const normalizedPath = normalizeResoniteInventoryPath(options?.path);
+
+    if (!ownerId) {
+        throw new Error('Missing Resonite inventory owner id');
+    }
+
+    if (!userId) {
+        throw new Error('Missing Resonite user id');
+    }
+
+    const segments = normalizedPath
+        .split('\\')
+        .map((segment) => segment.trim())
+        .filter(Boolean);
+    if (segments.length <= 1) {
+        return null;
+    }
+
+    const recordName = segments[segments.length - 1];
+    const parentPath = segments.slice(0, -1).join('\\');
+    const records = await fetchResoniteInventoryRecords({
+        userId,
+        ownerId,
+        path: parentPath
+    });
+
+    const normalizedRecordName = recordName.toLowerCase();
+    const normalizedAbsolutePath = normalizedPath.toLowerCase();
+
+    return (
+        records.find((record) => {
+            const candidateName = String(record?.name || '')
+                .trim()
+                .toLowerCase();
+            const candidatePath = String(record?.absolutePath || '')
+                .trim()
+                .toLowerCase();
+
+            return (
+                candidateName === normalizedRecordName ||
+                candidatePath === normalizedAbsolutePath
+            );
+        }) || null
+    );
+}
+
 export async function fetchResoniteInventoryOwnerDetails(ownerId) {
     const normalizedOwnerId = String(ownerId || '').trim();
     if (!normalizedOwnerId) {
@@ -228,7 +277,11 @@ export function normalizeResoniteInventoryRecord(record, options = {}) {
 }
 
 export function normalizeResoniteInventoryPath(path) {
-    return String(path || '').trim() || RESONITE_INVENTORY_ROOT_PATH;
+    return (
+        String(path || '')
+            .trim()
+            .replace(/[\\/]+/g, '\\') || RESONITE_INVENTORY_ROOT_PATH
+    );
 }
 
 export function getParentResoniteInventoryPath(path) {

@@ -41,12 +41,26 @@ function normalizeState(value) {
     return normalized || 'offline';
 }
 
+function isPrivatePlaceholderLocation(locationSnapshot, visibleLocation) {
+    return (
+        Boolean(locationSnapshot?.isPrivate) ||
+        String(visibleLocation || '')
+            .trim()
+            .toLowerCase() === 'private'
+    );
+}
+
 function buildResoniteLocationSnapshot(friendLike) {
     const state = normalizeState(friendLike?.state || friendLike?.ref?.state);
     const accessLevel = firstNonEmptyString(
         friendLike?.resonite?.accessLevel,
         friendLike?.resonite?.realtime?.accessLevel,
         friendLike?.ref?.resonite?.accessLevel
+    );
+    const sessionHash = firstNonEmptyString(
+        friendLike?.resonite?.currentSessionHash,
+        friendLike?.resonite?.realtime?.currentSessionHash,
+        friendLike?.ref?.resonite?.currentSessionHash
     );
     const rawLocation = firstNonEmptyString(
         friendLike?.ref?.traveling,
@@ -63,6 +77,7 @@ function buildResoniteLocationSnapshot(friendLike) {
             label: '',
             location: '',
             worldName: '',
+            sessionHash,
             isPrivate: false,
             isOffline: state === 'offline'
         };
@@ -73,6 +88,7 @@ function buildResoniteLocationSnapshot(friendLike) {
             label: 'Private',
             location: 'private',
             worldName: '',
+            sessionHash,
             isPrivate: true,
             isOffline: false
         };
@@ -83,6 +99,7 @@ function buildResoniteLocationSnapshot(friendLike) {
             label: '',
             location: 'offline',
             worldName: '',
+            sessionHash,
             isPrivate: false,
             isOffline: true
         };
@@ -93,6 +110,7 @@ function buildResoniteLocationSnapshot(friendLike) {
             label: '',
             location: 'traveling',
             worldName: '',
+            sessionHash,
             isPrivate: false,
             isOffline: false
         };
@@ -107,6 +125,8 @@ function buildResoniteLocationSnapshot(friendLike) {
         label: formattedLocation,
         location: formattedLocation,
         worldName: formattedLocation,
+        sessionHash,
+        accessLevel,
         isPrivate: false,
         isOffline: false
     };
@@ -160,6 +180,15 @@ export function buildResonitePresenceFeedUpdate(
     );
     const previousLocationAt = Number(refPatch.$location_at || ts);
     const feedBase = buildFeedBase(nextFriend, nowIso);
+    const isLocationTransitionCandidate =
+        nextState === 'online' &&
+        nextLocation.location &&
+        previousVisibleLocation &&
+        previousVisibleLocation !== nextLocation.location &&
+        previousVisibleLocation !== 'offline' &&
+        nextLocation.location !== 'offline' &&
+        previousVisibleLocation !== 'traveling' &&
+        nextLocation.location !== 'traveling';
 
     if (!previousFriend) {
         if (nextState === 'online') {
@@ -209,16 +238,81 @@ export function buildResonitePresenceFeedUpdate(
                 groupName: '',
                 time: ''
             });
+
+            if (
+                nextLocation.location &&
+                nextLocation.location !== 'offline' &&
+                nextLocation.location !== 'traveling'
+            ) {
+                feedEntries.push({
+                    ...feedBase,
+                    type: 'GPS',
+                    location: nextLocation.location,
+                    worldName: nextLocation.worldName,
+                    groupName: '',
+                    previousLocation: '',
+                    time: 0
+                });
+            }
+        }
+    } else if (isLocationTransitionCandidate) {
+        const sameSessionHash =
+            Boolean(previousLocation.sessionHash) &&
+            Boolean(nextLocation.sessionHash) &&
+            previousLocation.sessionHash === nextLocation.sessionHash;
+        const isSameSessionPrivateResolution =
+            sameSessionHash &&
+            isPrivatePlaceholderLocation(
+                previousLocation,
+                previousVisibleLocation
+            ) &&
+            Boolean(nextLocation.accessLevel) &&
+            !nextLocation.isPrivate;
+        const suppressReason = sameSessionHash
+            ? isSameSessionPrivateResolution
+                ? ''
+                : 'same-session-hash'
+            : '';
+
+        console.debug(
+            '[ResoniteIntegration] Evaluating GPS emission:',
+            JSON.stringify(
+                {
+                    userId: String(nextFriend?.id || '').trim(),
+                    previousLocation: previousVisibleLocation,
+                    nextLocation: nextLocation.location,
+                    previousSessionHash: previousLocation.sessionHash,
+                    nextSessionHash: nextLocation.sessionHash,
+                    sameSessionHash,
+                    suppressReason,
+                    previousState,
+                    nextState
+                },
+                null,
+                2
+            )
+        );
+
+        if (!sameSessionHash || isSameSessionPrivateResolution) {
+            refPatch.$location_at = ts;
+            refPatch.$previousLocation = '';
+            refPatch.$travelingToTime = ts;
+            feedEntries.push({
+                ...feedBase,
+                type: 'GPS',
+                location: nextLocation.location,
+                worldName: nextLocation.worldName,
+                groupName: '',
+                previousLocation: previousVisibleLocation,
+                time: Math.max(0, ts - previousLocationAt)
+            });
         }
     } else if (
         nextState === 'online' &&
         nextLocation.location &&
-        previousVisibleLocation &&
-        previousVisibleLocation !== nextLocation.location &&
-        previousVisibleLocation !== 'offline' &&
         nextLocation.location !== 'offline' &&
-        previousVisibleLocation !== 'traveling' &&
-        nextLocation.location !== 'traveling'
+        nextLocation.location !== 'traveling' &&
+        !previousVisibleLocation
     ) {
         refPatch.$location_at = ts;
         refPatch.$previousLocation = '';
@@ -229,8 +323,8 @@ export function buildResonitePresenceFeedUpdate(
             location: nextLocation.location,
             worldName: nextLocation.worldName,
             groupName: '',
-            previousLocation: previousVisibleLocation,
-            time: Math.max(0, ts - previousLocationAt)
+            previousLocation: '',
+            time: 0
         });
     } else if (
         nextState === 'online' &&

@@ -83,7 +83,7 @@ describe('previousInstancesColumns', () => {
         mocks.shiftHeld.value = false;
     });
 
-    test('renders Resonite user rows without VRChat launch affordances and opens history by raw location', () => {
+    test('renders Resonite user rows without VRChat launch affordances and opens history with provider metadata', () => {
         const columns = createPreviousInstancesColumns('user', {
             shiftHeld: mocks.shiftHeld,
             currentUserId: 'usr_me',
@@ -133,14 +133,8 @@ describe('previousInstancesColumns', () => {
         );
         infoButton.props.onClick({ stopPropagation: vi.fn() });
 
-        expect(mocks.onShowInfo).toHaveBeenNthCalledWith(
-            1,
-            '<color=blue>TMSC<color=purple> Zutyo <color=red>Home'
-        );
-        expect(mocks.onShowInfo).toHaveBeenNthCalledWith(
-            2,
-            '<color=blue>TMSC<color=purple> Zutyo <color=red>Home'
-        );
+        expect(mocks.onShowInfo).toHaveBeenNthCalledWith(1, row.original);
+        expect(mocks.onShowInfo).toHaveBeenNthCalledWith(2, row.original);
         expect(mocks.onLaunch).not.toHaveBeenCalled();
     });
 });

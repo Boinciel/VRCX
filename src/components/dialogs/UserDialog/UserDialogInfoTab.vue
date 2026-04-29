@@ -1,8 +1,8 @@
 <template>
-    <template v-if="isFriendOnline(userDialog.friend) || currentUser.id === userDialog.id">
+    <template v-if="isResoniteExternalUser || isFriendOnline(userDialog.friend) || currentUser.id === userDialog.id">
         <!-- ── Resonite external user: session info panel ── -->
         <div
-            v-if="userDialog.isExternal && userDialog.ref.location"
+            v-if="hasResoniteSessionPanel"
             class="mb-2 pb-2 border-b border-border"
             style="display: flex; flex-direction: column">
             <div class="flex items-center gap-2 text-muted-foreground" style="flex: none">
@@ -51,7 +51,12 @@
                     </span>
                 </TooltipWrapper>
             </div>
-            <div class="mt-2 flex items-baseline gap-2 text-sm" style="flex: none">
+            <div class="mt-2 flex items-center gap-2 text-sm" style="flex: none">
+                <img
+                    :src="resoniteProviderIconUrl"
+                    alt="Resonite"
+                    class="size-4 flex-none"
+                    loading="lazy" />
                 <span class="font-medium" v-html="renderResoniteRichText(resoniteSessionTitle)" />
             </div>
             <div v-if="resoniteSessionThumbnailUrl" class="mt-2" style="flex: none">
@@ -81,7 +86,7 @@
                     <div
                         class="relative inline-block flex-none size-9 mr-2.5"
                         :class="
-                            resoniteSessionHost.friend
+                            resoniteSessionHost.friend?.ref
                                 ? userStatusClass(resoniteSessionHost.friend.ref)
                                 : 'x-user-status'
                         ">
@@ -99,10 +104,20 @@
                         <span
                             class="block truncate font-medium leading-[18px]"
                             :style="
-                                resoniteSessionHost.friend ? { color: resoniteSessionHost.friend.ref?.$userColour } : {}
+                                resoniteSessionHost.friend?.ref
+                                    ? { color: resoniteSessionHost.friend.ref?.$userColour }
+                                    : {}
                             "
                             v-html="renderResoniteRichText(resoniteSessionHost.displayName)" />
-                        <span class="block truncate text-xs">{{ t('dialog.user.info.instance_creator') }}</span>
+                        <span
+                            class="inline-flex items-center gap-1 rounded-full border border-amber-400/60 px-1.5 py-0.5 text-[10px] font-medium text-amber-500">
+                            <img
+                                :src="resoniteHostBadge.imageUrl"
+                                :alt="resoniteHostBadge.label || 'Resonite host badge'"
+                                class="size-3 rounded-sm"
+                                loading="lazy" />
+                            {{ resoniteHostBadge.label || 'Host' }}
+                        </span>
                     </div>
                 </div>
                 <div
@@ -113,7 +128,7 @@
                     @click="openResoniteSessionUserDialog(su)">
                     <div
                         class="relative inline-block flex-none size-9 mr-2.5"
-                        :class="su.friend ? userStatusClass(su.friend.ref) : 'x-user-status'">
+                        :class="su.friend?.ref ? userStatusClass(su.friend.ref) : 'x-user-status'">
                         <Avatar class="size-9">
                             <AvatarImage v-if="su.avatarUrl" :src="su.avatarUrl" class="object-cover" />
                             <AvatarFallback>
@@ -124,7 +139,7 @@
                     <div class="flex-1 overflow-hidden">
                         <span
                             class="block truncate font-medium leading-[18px]"
-                            :style="su.friend ? { color: su.friend.ref?.$userColour } : {}"
+                            :style="su.friend?.ref ? { color: su.friend.ref?.$userColour } : {}"
                             v-html="renderResoniteRichText(su.displayName || su.username)" />
                         <span class="block truncate text-xs text-muted-foreground">
                             {{ su.isPresent ? 'Present' : 'Away' }}
@@ -236,16 +251,6 @@
                     >{{ userDialog.memo }}</pre
                 >
                 <pre class="text-xs font-[inherit] text-muted-foreground" v-else>—</pre>
-            </div>
-        </div>
-        <div v-if="isResoniteExternalUser" class="box-border flex items-center p-1.5 text-[13px] cursor-default w-full">
-            <div class="flex-1 overflow-hidden">
-                <span class="block truncate font-medium leading-[18px]">Resonite Tags</span>
-                <pre
-                    class="text-xs font-[inherit]"
-                    style="white-space: pre-wrap; margin: 0 0.5em 0 0; max-height: 120px; overflow-y: auto"
-                    >{{ resoniteTagsText }}</pre
-                >
             </div>
         </div>
         <div
@@ -602,7 +607,7 @@
             <div class="flex-1 overflow-hidden">
                 <span class="block truncate font-medium leading-[18px]">{{ t('dialog.user.info.id') }}</span>
                 <span class="block truncate text-xs">
-                    {{ userDialog.id }}
+                    {{ displayUserId }}
                     <TooltipWrapper side="top" :content="t('dialog.user.info.id_tooltip')">
                         <DropdownMenu>
                             <DropdownMenuTrigger as-child>
@@ -611,7 +616,7 @@
                                 </Button>
                             </DropdownMenuTrigger>
                             <DropdownMenuContent>
-                                <DropdownMenuItem @click="copyUserId(userDialog.id)">
+                                <DropdownMenuItem @click="copyUserId(displayUserId)">
                                     {{ t('dialog.user.info.copy_id') }}
                                 </DropdownMenuItem>
                                 <DropdownMenuItem @click="copyUserURL(userDialog.id)">
@@ -675,6 +680,7 @@
     import { renderResoniteRichText } from '../../../shared/utils/resoniteRichText';
     import { formatResoniteWorldLabel } from '../../../shared/utils/resoniteWorldLabel';
     import { convertFileUrlToImageUrl } from '../../../shared/utils/common';
+    import { resolveResoniteBadges } from '../../../services/resoniteBadges';
     import { fetchResoniteUserProfiles } from '../../../services/resoniteFriends';
     import {
         getResoniteSessionByHash,
@@ -728,6 +734,21 @@
             userDialog.value.isExternal &&
             String(userDialog.value.id || userDialog.value.ref?.id || '').startsWith('resonite:')
     );
+    const displayUserId = computed(() => {
+        const rawId = firstNonEmptyString(userDialog.value.id, userDialog.value.ref?.id);
+
+        if (!isResoniteExternalUser.value) {
+            return rawId;
+        }
+
+        return stripResonitePrefix(rawId) || rawId;
+    });
+    const resoniteProviderIconUrl = '/images/resonite/resonite_color.svg';
+
+    const hasResoniteSessionPanel = computed(
+        () => isResoniteExternalUser.value && Boolean(resoniteSessionTitle.value)
+    );
+
     const isCurrentDialogSelf = computed(() => {
         if (currentUser.value.id === userDialog.value.id) {
             return true;
@@ -764,7 +785,6 @@
         String(
             userDialog.value.ref?.resonite?.locationName ||
                 userDialog.value.ref?.resonite?.currentSessionName ||
-                userDialog.value.ref?.location ||
                 ''
         )
             .trim()
@@ -802,7 +822,7 @@
             return false;
         }
 
-        return Boolean(userDialog.value.ref?.location);
+        return Boolean(resoniteSessionTitle.value || hasKnownSession);
     });
 
     /** Resonite session title formatted like "World - Contacts+". */
@@ -810,9 +830,12 @@
         return formatResoniteWorldLabel(
             String(
                 resoniteSession.value?.name ||
+                    resoniteSession.value?.sessionName ||
+                    resoniteSession.value?.locationName ||
+                    resoniteSession.value?.worldName ||
+                    resoniteSession.value?.world?.name ||
                     userDialog.value.ref?.resonite?.locationName ||
                     userDialog.value.ref?.resonite?.currentSessionName ||
-                    userDialog.value.ref?.location ||
                     ''
             ).trim(),
             resoniteSession.value?.accessLevel
@@ -828,6 +851,14 @@
                 resoniteSession.value?.world?.thumbnailURL ||
                 ''
         ).trim()
+    );
+
+    const resoniteHostBadge = Object.freeze(
+        resolveResoniteBadges({
+            tags: ['host'],
+            displayBadges: [],
+            registrationDate: ''
+        })[0] || { label: 'Host', imageUrl: '' }
     );
 
     const resoniteVisibleUserProfiles = ref(new Map());
@@ -852,13 +883,6 @@
 
     const resoniteProfile = computed(() => userDialog.value.ref?.resonite || {});
 
-    const resoniteTagsText = computed(() => {
-        const tags = Array.isArray(resoniteProfile.value?.tags)
-            ? resoniteProfile.value.tags.map((tag) => String(tag || '').trim()).filter(Boolean)
-            : [];
-        return tags.length ? tags.join(', ') : '-';
-    });
-
     const resoniteProfileDescription = computed(() =>
         String(resoniteProfile.value?.profile?.description || resoniteProfile.value?.profile?.tagline || '').trim()
     );
@@ -877,6 +901,10 @@
 
     const showFriendedInfo = computed(() => {
         if (isCurrentDialogSelf.value) {
+            return false;
+        }
+
+        if (isResoniteExternalUser.value) {
             return false;
         }
 
@@ -970,9 +998,14 @@
         }
 
         const hostUserId = String(session.hostUserId || '').trim();
+        const hostSessionUser = resoniteSessionUsers.value.find(
+            (sessionUser) => String(sessionUser.userID || '').trim() === hostUserId
+        );
         const friend = getResoniteFriendByUserId(hostUserId);
         const profile = getResoniteVisibleUserProfile(hostUserId);
-        const displayName = String(friend?.name || session.hostUsername || profile?.username || hostUserId).trim();
+        const displayName = String(
+            hostSessionUser?.displayName || friend?.name || session.hostUsername || profile?.username || hostUserId
+        ).trim();
 
         if (!displayName) {
             return null;
@@ -982,12 +1015,14 @@
             userID: hostUserId,
             displayName,
             avatarUrl: firstNonEmptyString(
+                hostSessionUser?.avatarUrl,
                 friend?.ref?.profileImageUrl,
                 friend?.ref?.userIcon,
                 convertFileUrlToImageUrl(profile?.profile?.iconUrl)
             ),
-            friend,
-            profile
+            isPresent: Boolean(hostSessionUser?.isPresent),
+            friend: hostSessionUser?.friend || friend,
+            profile: hostSessionUser?.profile || profile
         };
     });
 
@@ -1028,9 +1063,6 @@
 
     /** Contacts/friends currently in session. */
     const resoniteContactsInWorldCount = computed(() => {
-        const currentDialogResoniteUserId = String(userDialog.value.ref?.resonite?.userId || userDialog.value.id || '')
-            .replace(/^resonite:/, '')
-            .trim();
         const countedUserIds = new Set();
         let count = 0;
 
@@ -1038,8 +1070,8 @@
             const sessionUserId = String(sessionUser?.userID || '').trim();
             if (
                 !sessionUser?.friend ||
+                !sessionUser?.isPresent ||
                 !sessionUserId ||
-                sessionUserId === currentDialogResoniteUserId ||
                 countedUserIds.has(sessionUserId)
             ) {
                 return;
@@ -1128,10 +1160,17 @@
             sessionUser?.avatarUrl,
             convertFileUrlToImageUrl(sessionUser?.profile?.profile?.iconUrl)
         );
+        const accessLevel = firstNonEmptyString(
+            resoniteSession.value?.accessLevel,
+            userDialog.value.ref?.resonite?.accessLevel,
+            userDialog.value.ref?.resonite?.realtime?.accessLevel
+        );
         const locationName = firstNonEmptyString(
-            resoniteSession.value?.name,
+            formatResoniteWorldLabel(resoniteSession.value?.name, accessLevel),
+            formatResoniteWorldLabel(userDialog.value.ref?.resonite?.locationName, accessLevel),
+            formatResoniteWorldLabel(userDialog.value.ref?.resonite?.currentSessionName, accessLevel),
             userDialog.value.ref?.resonite?.locationName,
-            userDialog.value.ref?.location
+            userDialog.value.ref?.resonite?.currentSessionName
         );
         const sessionHash = firstNonEmptyString(
             userDialog.value.ref?.resonite?.currentSessionHash,
@@ -1139,8 +1178,8 @@
         );
         const sessionId = firstNonEmptyString(resoniteSession.value?.sessionId);
         const sessionName = firstNonEmptyString(
-            resoniteSession.value?.name,
-            userDialog.value.ref?.resonite?.currentSessionName,
+            formatResoniteWorldLabel(resoniteSession.value?.name, accessLevel),
+            formatResoniteWorldLabel(userDialog.value.ref?.resonite?.currentSessionName, accessLevel),
             locationName
         );
         const sessionHostUserId = String(resoniteSession.value?.hostUserId || '').trim();
@@ -1163,6 +1202,7 @@
             sessionHash,
             sessionName,
             sessionId,
+            accessLevel,
             friendCtx: sessionUser?.friend || null,
             tagline: String(sessionUser?.profile?.profile?.tagline || '').trim(),
             description: String(sessionUser?.profile?.profile?.description || '').trim()

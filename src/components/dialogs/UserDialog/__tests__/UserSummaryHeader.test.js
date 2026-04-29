@@ -2,6 +2,8 @@ import { beforeEach, describe, expect, test, vi } from 'vitest';
 import { createTestingPinia } from '@pinia/testing';
 import { shallowMount } from '@vue/test-utils';
 
+const mockFetchResoniteInventoryRecordByPath = vi.fn();
+
 vi.mock('vue-i18n', () => {
     const { ref } = require('vue');
     return {
@@ -34,14 +36,13 @@ vi.mock('../../../../plugins/router', () => {
 vi.mock('vue-router', async (importOriginal) => {
     const actual = await importOriginal();
     const { ref } = require('vue');
-    return {
-        ...actual,
+    return Object.assign({}, actual, {
         useRouter: vi.fn(() => ({
             push: vi.fn(),
             replace: vi.fn(),
             currentRoute: ref({ path: '/', name: '', meta: {} })
         }))
-    };
+    });
 });
 
 vi.mock('../../../../plugins/interopApi', () => ({ initInteropApi: vi.fn() }));
@@ -83,6 +84,10 @@ vi.mock('../../../../composables/useUserDisplay', () => ({
         userImage: vi.fn(() => ''),
         userStatusClass: vi.fn(() => '')
     })
+}));
+vi.mock('../../../../services/resoniteInventory', () => ({
+    fetchResoniteInventoryRecordByPath: (...args) =>
+        mockFetchResoniteInventoryRecordByPath(...args)
 }));
 
 import UserSummaryHeader from '../UserSummaryHeader.vue';
@@ -146,7 +151,9 @@ function mountComponent(overrides = {}) {
             plugins: [pinia],
             stubs: {
                 TooltipWrapper: {
-                    template: '<div><slot /><slot name="content" /></div>'
+                    props: ['content'],
+                    template:
+                        '<div><slot /><span>{{ content }}</span><slot name="content" /></div>'
                 },
                 UserActionDropdown: true,
                 Popover: { template: '<div><slot /></div>' },
@@ -162,6 +169,7 @@ function mountComponent(overrides = {}) {
 describe('UserSummaryHeader', () => {
     beforeEach(() => {
         vi.clearAllMocks();
+        mockFetchResoniteInventoryRecordByPath.mockResolvedValue(null);
     });
 
     test('prefers the Resonite username over the synthetic id in the header', async () => {
@@ -188,5 +196,136 @@ describe('UserSummaryHeader', () => {
         });
 
         expect(wrapper.text()).toContain('ReCon');
+    });
+
+    test('renders Resonite resolved badges in the header badge strip', () => {
+        const wrapper = mountComponent({
+            ref: {
+                resonite: {
+                    userId: 'U-1mNv2U0ss6a',
+                    username: 'ExampleUser',
+                    tags: ['potato'],
+                    profile: {
+                        displayBadges: [
+                            {
+                                id: 'custom-1',
+                                ownerId: 'U-custom',
+                                enabled: true,
+                                name: 'Custom Contributor',
+                                assetUrl:
+                                    'resdb:///0123456789abcdef0123456789abcdef.png'
+                            }
+                        ]
+                    }
+                }
+            }
+        });
+
+        const resoniteBadgeImages = wrapper
+            .findAll('img')
+            .map((node) => node.attributes('src') || '')
+            .filter((src) => src.startsWith('https://assets.resonite.com/'));
+
+        expect(resoniteBadgeImages).toHaveLength(2);
+        expect(
+            resoniteBadgeImages.some((src) =>
+                src.includes('0123456789abcdef0123456789abcdef')
+            )
+        ).toBe(true);
+        expect(
+            resoniteBadgeImages.some((src) =>
+                src.includes(
+                    'adf9ba7eee98dfa36e8fcf4130f2d6e60d353566c9f315c0f28a000dd06cad2c'
+                )
+            )
+        ).toBe(true);
+    });
+
+    test('renders a single square profile image for external users', () => {
+        const avatarUrl = 'https://example.com/resonite-avatar.png';
+        const wrapper = mountComponent({
+            ref: {
+                currentAvatarThumbnailImageUrl: avatarUrl,
+                currentAvatarImageUrl: avatarUrl,
+                profilePicOverrideThumbnail: avatarUrl,
+                profilePicOverride: avatarUrl,
+                userIcon: avatarUrl,
+                resonite: {
+                    userId: 'U-1mNv2U0ss6a',
+                    username: 'ExampleUser'
+                }
+            }
+        });
+
+        const avatarImages = wrapper.findAll(`img[src="${avatarUrl}"]`);
+
+        expect(avatarImages).toHaveLength(1);
+        expect(avatarImages[0].attributes('style')).toContain('width: 120px;');
+        expect(avatarImages[0].attributes('style')).toContain('height: 120px;');
+    });
+
+    test('prefers the resolved badge label over the raw tag in tooltip content', () => {
+        const wrapper = mountComponent({
+            ref: {
+                resonite: {
+                    userId: 'U-1mNv2U0ss6a',
+                    username: 'ExampleUser',
+                    tags: ['vfe22']
+                }
+            }
+        });
+
+        expect(wrapper.text()).toContain('Virtual Furnal Equinox 2022');
+        expect(wrapper.text()).not.toContain('vfe22');
+    });
+
+    test('resolves custom 3D inventory badges into rendered thumbnail badges', async () => {
+        mockFetchResoniteInventoryRecordByPath.mockResolvedValue({
+            id: 'R-honeybee',
+            ownerId: 'G-Resonite',
+            name: 'TheHoneybee',
+            path: 'Inventory\\3D_Badges\\Patreon',
+            assetUri: 'resdb:///0123456789abcdef0123456789abcdef.png',
+            thumbnailUrl:
+                'https://assets.resonite.com/fedcba9876543210fedcba9876543210'
+        });
+
+        const wrapper = mountComponent({
+            ref: {
+                resonite: {
+                    userId: 'U-1mNv2U0ss6a',
+                    username: 'ExampleUser',
+                    profile: {
+                        displayBadges: [
+                            {
+                                id: 'custom 3D badge:G-Resonite/Inventory/3D_Badges/Patreon/TheHoneybee',
+                                name: 'Custom 3D Badge',
+                                badgeType: '3D'
+                            }
+                        ]
+                    }
+                }
+            }
+        });
+
+        await vi.waitFor(() => {
+            expect(mockFetchResoniteInventoryRecordByPath).toHaveBeenCalledWith(
+                {
+                    userId: 'U-1mNv2U0ss6a',
+                    ownerId: 'G-Resonite',
+                    path: 'Inventory\\3D_Badges\\Patreon\\TheHoneybee'
+                }
+            );
+        });
+
+        await vi.waitFor(() => {
+            const resoniteBadgeImages = wrapper
+                .findAll('img')
+                .map((node) => node.attributes('src') || '');
+
+            expect(resoniteBadgeImages).toContain(
+                'https://assets.resonite.com/fedcba9876543210fedcba9876543210'
+            );
+        });
     });
 });

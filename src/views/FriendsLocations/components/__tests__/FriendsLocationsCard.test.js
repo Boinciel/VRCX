@@ -102,7 +102,8 @@ const {
     mockUserImage,
     mockToastSuccess,
     mockToastError,
-    mockToastDismiss
+    mockToastDismiss,
+    mockGetResoniteSessionByHash
 } = vi.hoisted(() => ({
     mockSendRequestInvite: vi.fn().mockResolvedValue({}),
     mockSendInvite: vi.fn().mockResolvedValue({}),
@@ -117,7 +118,8 @@ const {
     mockUserImage: vi.fn().mockReturnValue('https://example.com/avatar.png'),
     mockToastSuccess: vi.fn(),
     mockToastError: vi.fn(),
-    mockToastDismiss: vi.fn()
+    mockToastDismiss: vi.fn(),
+    mockGetResoniteSessionByHash: vi.fn().mockReturnValue(null)
 }));
 
 vi.mock('vue-sonner', () => ({
@@ -144,6 +146,10 @@ vi.mock('../../../../composables/useUserDisplay', () => ({
         userImage: (...args) => mockUserImage(...args),
         userStatusClass: (...args) => mockUserStatusClass(...args)
     })
+}));
+
+vi.mock('../../../../services/resoniteRealtime', () => ({
+    getResoniteSessionByHash: (...args) => mockGetResoniteSessionByHash(...args)
 }));
 
 vi.mock('../../../../api', () => {
@@ -197,6 +203,12 @@ const i18n = createI18n({
 });
 
 vi.mock('lucide-vue-next', () => ({
+    Clock: { template: '<span class="clock-icon" />' },
+    ExternalLink: { template: '<span class="external-link-icon" />' },
+    LogIn: { template: '<span class="login-icon" />' },
+    Mail: { template: '<span class="mail-icon" />' },
+    MessageSquare: { template: '<span class="message-square-icon" />' },
+    MousePointer: { template: '<span class="mouse-pointer-icon" />' },
     Pencil: { template: '<span class="pencil-icon" />' },
     User: { template: '<span class="user-icon" />' }
 }));
@@ -378,6 +390,40 @@ describe('FriendsLocationsCard.vue', () => {
             const wrapper = mountCard({ displayInstanceInfo: true });
             expect(wrapper.find('.location-stub').exists()).toBe(true);
         });
+
+        test('renders Resonite rich text world names without using the VRChat location component', () => {
+            mockGetResoniteSessionByHash.mockReturnValue({
+                accessLevel: 'anyone'
+            });
+
+            const wrapper = mountCard({
+                friend: makeFriend({
+                    id: 'resonite:U-test123',
+                    name: 'Element',
+                    isExternal: true,
+                    provider: 'resonite',
+                    ref: {
+                        location: '<color=#E774EB>Soft</color> Sea of Stars',
+                        travelingToLocation: '',
+                        statusDescription: 'Hello World',
+                        status: 'active',
+                        resonite: {
+                            currentSessionHash: 'S-soft'
+                        }
+                    },
+                    resonite: {
+                        currentSessionHash: 'S-soft'
+                    }
+                })
+            });
+
+            expect(wrapper.find('.location-stub').exists()).toBe(false);
+            expect(wrapper.text()).toContain('Soft Sea of Stars - Public');
+            expect(wrapper.text()).not.toContain('<color=#E774EB>');
+            expect(wrapper.find('.friend-card__location').classes()).not.toContain('text-sm');
+            expect(wrapper.find('.friend-card__location').classes()).not.toContain('text-muted-foreground');
+            expect(wrapper.find('.x-location__text').exists()).toBe(true);
+        });
     });
 
     describe('context menu visibility', () => {
@@ -462,8 +508,8 @@ describe('FriendsLocationsCard.vue', () => {
                 })
             });
             expect(
-                wrapper.find('[data-testid="context-menu-separator"]').exists()
-            ).toBe(true);
+                wrapper.findAll('[data-testid="context-menu-separator"]')
+            ).toHaveLength(2);
         });
 
         test('hides separator when friend has no real location', () => {
@@ -474,8 +520,8 @@ describe('FriendsLocationsCard.vue', () => {
                 })
             });
             expect(
-                wrapper.find('[data-testid="context-menu-separator"]').exists()
-            ).toBe(false);
+                wrapper.findAll('[data-testid="context-menu-separator"]')
+            ).toHaveLength(1);
         });
 
         test('shows Invite but disabled when cannot invite to my location', () => {
@@ -605,14 +651,14 @@ describe('FriendsLocationsCard.vue', () => {
             const wrapper = mountCard();
             expect(
                 wrapper.find('.friend-card__status-dot').classes()
-            ).toContain('friend-card__status-dot--join');
+            ).toContain('friend-card__status-dot--joinme');
         });
 
         test('shows active busy status class when active + busy', () => {
             mockUserStatusClass.mockReturnValue({
-                joinme: false,
+                'active-busy': true,
                 online: false,
-                active: true
+                active: false
             });
             const wrapper = mountCard({
                 friend: makeFriend({ status: 'busy' })
