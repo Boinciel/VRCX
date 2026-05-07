@@ -81,6 +81,22 @@ describe('resonite utils', () => {
                 })
             ).toBe('S-realtime');
         });
+
+        test('falls back to the current session entry when top-level fields are blank', () => {
+            expect(
+                getResoniteCurrentSessionHash({
+                    resonite: {
+                        currentSessionIndex: 0,
+                        sessions: [
+                            {
+                                sessionId: 'S-stable',
+                                sessionHash: 'S-from-session-list'
+                            }
+                        ]
+                    }
+                })
+            ).toBe('S-from-session-list');
+        });
     });
 
     describe('getResoniteSessionGroupingKey', () => {
@@ -146,6 +162,26 @@ describe('resonite utils', () => {
                     null
                 )
             ).toBe('hash:S-transient');
+        });
+
+        test('uses the current session entry session id before falling back to hash', () => {
+            expect(
+                getResoniteSessionGroupingKey(
+                    {
+                        resonite: {
+                            currentSessionHash: 'S-transient',
+                            currentSessionIndex: 0,
+                            sessions: [
+                                {
+                                    sessionId: 'session-from-list',
+                                    sessionHash: 'S-transient'
+                                }
+                            ]
+                        }
+                    },
+                    null
+                )
+            ).toBe('session:session-from-list');
         });
     });
 });

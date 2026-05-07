@@ -492,12 +492,6 @@
      */
     function loadLastActiveTab() {
         const tab = userDialog.value.lastActiveTab;
-
-        if (isExternalUser.value && tab !== 'Info' && !(tab === 'Resonite' && showResoniteTab.value)) {
-            tab = 'Info';
-            userDialog.value.activeTab = tab;
-            userDialog.value.lastActiveTab = tab;
-        }
         handleUserDialogTab(tab);
     }
 

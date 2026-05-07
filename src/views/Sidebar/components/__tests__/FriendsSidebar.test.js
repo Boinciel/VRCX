@@ -380,6 +380,68 @@ describe('FriendsSidebar.vue', () => {
         expect(wrapper.text()).toContain('(2)');
     });
 
+    test('prefers resolved session names for grouped Resonite headers when the first friend is stale', async () => {
+        mocks.appearanceStore.isSidebarGroupByInstance.value = true;
+        mocks.getResoniteSessionByHash.mockImplementation((hash) => {
+            if (hash === 'S-rocky') {
+                return {
+                    sessionId: 'S-shared',
+                    name: 'Rocky Retreat "Cafe" [Remastered]',
+                    accessLevel: 'anyone'
+                };
+            }
+
+            return null;
+        });
+        mocks.friendStore.resoniteFriendsInSameSession.value = [
+            [
+                {
+                    id: 'resonite:u-a',
+                    state: 'online',
+                    provider: 'resonite',
+                    isExternal: true,
+                    ref: {
+                        resonite: {
+                            currentSessionHash: 'S-stale',
+                            sessionId: 'S-shared'
+                        }
+                    },
+                    resonite: {
+                        currentSessionHash: 'S-stale',
+                        currentSessionName: 'Elysium Fastdraw',
+                        sessionId: 'S-shared'
+                    }
+                },
+                {
+                    id: 'resonite:u-b',
+                    state: 'online',
+                    provider: 'resonite',
+                    isExternal: true,
+                    ref: {
+                        resonite: {
+                            currentSessionHash: 'S-rocky',
+                            sessionId: 'S-shared'
+                        }
+                    },
+                    resonite: {
+                        currentSessionHash: 'S-rocky',
+                        currentSessionName: '',
+                        sessionId: 'S-shared'
+                    }
+                }
+            ]
+        ];
+
+        const wrapper = mount(FriendsSidebar);
+        await flushPromises();
+        await nextTick();
+
+        expect(wrapper.text()).toContain(
+            'Rocky Retreat "Cafe" [Remastered] - Public'
+        );
+        expect(wrapper.text()).not.toContain('Elysium Fastdraw');
+    });
+
     test('hide grouped friends also excludes grouped Resonite contacts from the online section', async () => {
         mocks.appearanceStore.isSidebarGroupByInstance.value = true;
         mocks.appearanceStore.isHideFriendsInSameInstance.value = true;

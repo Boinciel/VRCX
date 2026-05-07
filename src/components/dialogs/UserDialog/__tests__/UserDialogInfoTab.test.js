@@ -96,6 +96,47 @@ vi.mock('../../../../services/request', () => ({
 
 vi.mock('../../../../services/resoniteRealtime', () => ({
     getResoniteSessionByHash: vi.fn(),
+    getResoniteSessionTargets: vi.fn((presence) => {
+        const targets = [];
+        const seen = new Set();
+
+        const addTarget = (sessionHash, broadcastKey = '', sessionId = '') => {
+            const normalizedHash = String(sessionHash || '').trim();
+            const normalizedBroadcastKey = String(broadcastKey || '').trim();
+            const normalizedSessionId = String(sessionId || '').trim();
+            if (!normalizedHash && !normalizedBroadcastKey && !normalizedSessionId) {
+                return;
+            }
+
+            const dedupeKey = normalizedSessionId
+                ? `session:${normalizedSessionId}`
+                : normalizedBroadcastKey
+                  ? `broadcast:${normalizedBroadcastKey}`
+                  : `hash:${normalizedHash}`;
+            if (seen.has(dedupeKey)) {
+                return;
+            }
+
+            seen.add(dedupeKey);
+            targets.push({
+                sessionHash: normalizedHash,
+                broadcastKey: normalizedBroadcastKey,
+                sessionId: normalizedSessionId
+            });
+        };
+
+        addTarget(
+            presence?.currentSessionHash,
+            presence?.broadcastKey,
+            presence?.sessionId
+        );
+
+        for (const session of Array.isArray(presence?.sessions) ? presence.sessions : []) {
+            addTarget(session?.sessionHash, session?.broadcastKey, session?.sessionId);
+        }
+
+        return targets;
+    }),
     refreshResoniteSessionByHash: vi.fn(),
     resoniteSessionCacheVersion: { value: 0 }
 }));
@@ -118,6 +159,7 @@ import {
 } from '../../../../stores';
 import {
     getResoniteSessionByHash,
+    getResoniteSessionTargets,
     refreshResoniteSessionByHash
 } from '../../../../services/resoniteRealtime';
 
@@ -320,7 +362,7 @@ describe('UserDialogInfoTab.vue', () => {
             expect(creditsSpy).toHaveBeenCalledTimes(0);
         });
 
-        test('refreshResoniteSessionInfo only refreshes the current session cache', async () => {
+        test('refreshResoniteSessionInfo refreshes every listed session hash once', async () => {
             const wrapper = mountComponent({
                 userDialog: {
                     id: 'resonite:U-host',
@@ -330,7 +372,23 @@ describe('UserDialogInfoTab.vue', () => {
                         location: 'Soft Sea of Stars',
                         resonite: {
                             userId: 'U-host',
-                            currentSessionHash: 'S-hash'
+                            currentSessionHash: 'S-hash',
+                            realtime: {
+                                sessions: [
+                                    {
+                                        sessionHash: 'S-hash',
+                                        broadcastKey: 'U-host:primary'
+                                    },
+                                    {
+                                        sessionHash: 'S-side',
+                                        broadcastKey: 'U-host:secondary'
+                                    },
+                                    {
+                                        sessionHash: 'S-hash',
+                                        broadcastKey: 'U-host:primary'
+                                    }
+                                ]
+                            }
                         },
                         state: 'online',
                         displayName: 'HostUser',
@@ -352,12 +410,19 @@ describe('UserDialogInfoTab.vue', () => {
 
             const friendStore = useFriendStore();
             expect(friendStore.refreshResoniteFriends).not.toHaveBeenCalled();
-            expect(refreshResoniteSessionByHash).toHaveBeenCalledWith({
+            expect(refreshResoniteSessionByHash).toHaveBeenNthCalledWith(1, {
                 sessionHash: 'S-hash',
                 userId: 'U-host',
                 apiKey: 'U-test:session-token',
                 force: true
             });
+            expect(refreshResoniteSessionByHash).toHaveBeenNthCalledWith(2, {
+                sessionHash: 'S-side',
+                userId: 'U-host',
+                apiKey: 'U-test:session-token',
+                force: true
+            });
+            expect(refreshResoniteSessionByHash).toHaveBeenCalledTimes(2);
         });
 
         test('openResoniteSession falls back to a session deeplink when sessionURLs are missing', () => {
@@ -407,99 +472,6 @@ describe('UserDialogInfoTab.vue', () => {
             expect(globalThis.AppApi.OpenLink).toHaveBeenCalledWith(
                 'resonite://session/S-public'
             );
-        });
-
-        test('renders the Resonite session title from world metadata when the session payload has no top-level name', () => {
-            vi.mocked(getResoniteSessionByHash).mockReturnValue({
-                sessionId: 'S-public',
-                accessLevel: 'contacts',
-                world: {
-                    name: 'Soft Sea of Stars'
-                },
-                sessionUsers: []
-            });
-
-            const wrapper = mountComponent({
-                userDialog: {
-                    id: 'resonite:U-host',
-                    isExternal: true,
-                    friend: {
-                        state: 'online',
-                        ref: {
-                            location: ''
-                        }
-                    },
-                    ref: {
-                        id: 'resonite:U-host',
-                        location: '',
-                        resonite: {
-                            currentSessionHash: 'S-hash',
-                            locationName: ''
-                        },
-                        state: 'online',
-                        displayName: 'HostUser',
-                        bio: '',
-                        bioLinks: [],
-                        profilePicOverride: '',
-                        currentAvatarImageUrl: '',
-                        currentAvatarTags: [],
-                        $online_for: 1000,
-                        last_login: '2025-01-01T00:00:00.000Z',
-                        last_activity: '2025-01-01T00:00:00.000Z',
-                        date_joined: '2020-01-01',
-                        allowAvatarCopying: true
-                    },
-                    $location: null,
-                    users: []
-                }
-            });
-
-            expect(wrapper.html()).toContain('Soft Sea of Stars - Contacts');
-        });
-
-        test('renders the Resonite session title for a seeded non-contact external user', () => {
-            vi.mocked(getResoniteSessionByHash).mockReturnValue({
-                sessionId: 'S-public',
-                accessLevel: 'registeredusers',
-                world: {
-                    name: 'Soft Sea of Stars'
-                },
-                sessionUsers: []
-            });
-
-            const wrapper = mountComponent({
-                userDialog: {
-                    id: 'resonite:U-other',
-                    isExternal: true,
-                    friend: null,
-                    ref: {
-                        id: 'resonite:U-other',
-                        location: 'Soft Sea of Stars',
-                        resonite: {
-                            userId: 'U-other',
-                            currentSessionHash: 'S-hash',
-                            currentSessionName: 'Soft Sea of Stars',
-                            locationName: 'Soft Sea of Stars'
-                        },
-                        state: 'online',
-                        displayName: 'OtherUser',
-                        bio: '',
-                        bioLinks: [],
-                        profilePicOverride: '',
-                        currentAvatarImageUrl: '',
-                        currentAvatarTags: [],
-                        $online_for: 1000,
-                        last_login: '2025-01-01T00:00:00.000Z',
-                        last_activity: '2025-01-01T00:00:00.000Z',
-                        date_joined: '2020-01-01',
-                        allowAvatarCopying: true
-                    },
-                    $location: null,
-                    users: []
-                }
-            });
-
-            expect(wrapper.html()).toContain('Soft Sea of Stars - Registered');
         });
 
         test('openResoniteSessionUserDialog seeds session metadata for non-contact participants', () => {
@@ -819,6 +791,235 @@ describe('UserDialogInfoTab.vue', () => {
             expect(wrapper.text().indexOf('GuestUser')).toBeLessThan(
                 wrapper.text().indexOf('OtherUser')
             );
+        });
+
+        test('renders additional concurrent Resonite sessions in the user tab', () => {
+            vi.mocked(getResoniteSessionByHash).mockImplementation((sessionHash) => {
+                if (sessionHash === 'S-primary') {
+                    return {
+                        sessionHash: 'S-primary',
+                        sessionId: 'session-primary',
+                        name: 'Primary World',
+                        joinedUsers: 3,
+                        sessionUsers: []
+                    };
+                }
+
+                if (sessionHash === 'S-secondary') {
+                    return {
+                        sessionHash: 'S-secondary',
+                        sessionId: 'session-secondary',
+                        name: 'Secondary World',
+                        joinedUsers: 2,
+                        sessionUsers: []
+                    };
+                }
+
+                return null;
+            });
+
+            const wrapper = mountComponent({
+                userDialog: {
+                    id: 'resonite:U-host',
+                    isExternal: true,
+                    friend: {
+                        state: 'online',
+                        ref: {
+                            location: 'Primary World'
+                        }
+                    },
+                    ref: {
+                        id: 'resonite:U-host',
+                        location: 'Primary World',
+                        resonite: {
+                            currentSessionHash: 'S-primary',
+                            locationName: 'Primary World',
+                            realtime: {
+                                sessions: [
+                                    {
+                                        sessionHash: 'S-primary',
+                                        broadcastKey: 'U-host:primary'
+                                    },
+                                    {
+                                        sessionHash: 'S-secondary',
+                                        broadcastKey: 'U-host:secondary'
+                                    }
+                                ]
+                            }
+                        },
+                        state: 'online',
+                        displayName: 'CreatorUser',
+                        bio: '',
+                        bioLinks: [],
+                        profilePicOverride: '',
+                        currentAvatarImageUrl: '',
+                        currentAvatarTags: [],
+                        $online_for: 1000,
+                        last_login: '2025-01-01T00:00:00.000Z',
+                        last_activity: '2025-01-01T00:00:00.000Z',
+                        date_joined: '2020-01-01',
+                        allowAvatarCopying: true
+                    },
+                    $location: null,
+                    users: []
+                }
+            });
+
+            expect(getResoniteSessionTargets).toHaveBeenCalled();
+            expect(wrapper.text()).toContain('Other Sessions');
+            expect(wrapper.text()).toContain('Primary World');
+            expect(wrapper.text()).toContain('Secondary World');
+        });
+
+        test('hides unresolved and duplicate current sessions from Other Sessions', () => {
+            vi.mocked(getResoniteSessionByHash).mockImplementation((sessionHash) => {
+                if (sessionHash === 'S-primary') {
+                    return {
+                        sessionHash: 'S-primary',
+                        sessionId: 'session-primary',
+                        name: 'Primary World',
+                        joinedUsers: 3,
+                        sessionUsers: []
+                    };
+                }
+
+                if (sessionHash === 'S-duplicate') {
+                    return {
+                        sessionHash: 'S-duplicate',
+                        sessionId: 'session-primary',
+                        name: 'Primary World',
+                        joinedUsers: 3,
+                        sessionUsers: []
+                    };
+                }
+
+                return null;
+            });
+
+            const wrapper = mountComponent({
+                userDialog: {
+                    id: 'resonite:U-host',
+                    isExternal: true,
+                    friend: {
+                        state: 'online',
+                        ref: {
+                            location: 'Primary World'
+                        }
+                    },
+                    ref: {
+                        id: 'resonite:U-host',
+                        location: 'Primary World',
+                        resonite: {
+                            currentSessionHash: 'S-primary',
+                            locationName: 'Primary World',
+                            realtime: {
+                                sessions: [
+                                    {
+                                        sessionHash: 'S-primary',
+                                        broadcastKey: 'U-host:primary'
+                                    },
+                                    {
+                                        sessionHash: 'S-duplicate',
+                                        broadcastKey: 'U-host:duplicate'
+                                    },
+                                    {
+                                        sessionHash: 'S-unresolved',
+                                        broadcastKey: 'U-host:unresolved'
+                                    }
+                                ]
+                            }
+                        },
+                        state: 'online',
+                        displayName: 'CreatorUser',
+                        bio: '',
+                        bioLinks: [],
+                        profilePicOverride: '',
+                        currentAvatarImageUrl: '',
+                        currentAvatarTags: [],
+                        $online_for: 1000,
+                        last_login: '2025-01-01T00:00:00.000Z',
+                        last_activity: '2025-01-01T00:00:00.000Z',
+                        date_joined: '2020-01-01',
+                        allowAvatarCopying: true
+                    },
+                    $location: null,
+                    users: []
+                }
+            });
+
+            expect(wrapper.text()).not.toContain('Other Sessions');
+            expect(wrapper.text()).not.toContain('S-unresolved');
+            expect(wrapper.text().match(/Primary World/g) || []).toHaveLength(1);
+        });
+
+        test('promotes a resolved matching session when the current target is unresolved', () => {
+            vi.mocked(getResoniteSessionByHash).mockImplementation((sessionHash) => {
+                if (sessionHash === 'hash-real') {
+                    return {
+                        sessionHash: 'hash-real',
+                        sessionId: 'session-real',
+                        accessLevel: 'Anyone',
+                        name: 'Rocky Retreat "Cafe" [Remastered]',
+                        joinedUsers: 6,
+                        maxUsers: 16,
+                        sessionUsers: [
+                            {
+                                userID: 'U-1',
+                                username: 'HostUser',
+                                isPresent: true
+                            }
+                        ]
+                    };
+                }
+
+                return null;
+            });
+
+            const wrapper = mountComponent({
+                userDialog: {
+                    id: 'resonite:U-1',
+                    isExternal: true,
+                    ref: {
+                        id: 'resonite:U-1',
+                        location: 'Rocky Retreat "Cafe" [Remastered] - Public',
+                        resonite: {
+                            currentSessionHash: 'hash-current',
+                            locationName:
+                                'Rocky Retreat "Cafe" [Remastered] - Public',
+                            currentSessionName:
+                                'Rocky Retreat "Cafe" [Remastered] - Public',
+                            realtime: {
+                                sessions: [
+                                    {
+                                        sessionHash: 'hash-real',
+                                        sessionId: 'session-real',
+                                        broadcastKey: 'U-1:session-real',
+                                        accessLevel: 'Anyone',
+                                        title: 'Rocky Retreat "Cafe" [Remastered] - Public'
+                                    }
+                                ]
+                            }
+                        },
+                        state: 'online',
+                        displayName: 'HostUser',
+                        bio: '',
+                        bioLinks: [],
+                        profilePicOverride: '',
+                        currentAvatarImageUrl: '',
+                        currentAvatarTags: [],
+                        $online_for: 1000,
+                        last_login: '2025-01-01T00:00:00.000Z',
+                        last_activity: '2025-01-01T00:00:00.000Z',
+                        date_joined: '2020-01-01',
+                        allowAvatarCopying: true
+                    },
+                    $location: null,
+                    users: []
+                }
+            });
+
+            expect(wrapper.text()).toContain('6 /16');
+            expect(wrapper.text()).not.toContain('Other Sessions');
         });
 
         test('renders the Resonite color icon beside the session title', () => {

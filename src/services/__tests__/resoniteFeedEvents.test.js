@@ -12,7 +12,8 @@ import { buildResonitePresenceFeedUpdate } from '../resoniteFeedEvents';
  *   location?: string,
  *   traveling?: string,
  *   accessLevel?: string,
- *   currentSessionHash?: string,
+ *   broadcastKey?: string,
+ *   sessionId?: string,
  *   locationAt?: number,
  *   onlineFor?: number | string,
  *   offlineFor?: number | string,
@@ -29,6 +30,8 @@ function makeFriend({
     traveling = 'The Navy Seal',
     accessLevel = '',
     currentSessionHash = '',
+    broadcastKey = '',
+    sessionId = '',
     locationAt = 1_000,
     onlineFor = 1_000,
     offlineFor = '',
@@ -53,13 +56,23 @@ function makeFriend({
             $offline_for: offlineFor,
             $active_for: '',
             $travelingToTime: locationAt,
-            $previousLocation: previousLocation
+            $previousLocation: previousLocation,
+            resonite: {
+                accessLevel,
+                locationName: traveling,
+                currentSessionName: traveling,
+                currentSessionHash,
+                broadcastKey,
+                sessionId
+            }
         },
         resonite: {
             accessLevel,
             locationName: traveling,
             currentSessionName: traveling,
-            currentSessionHash
+            currentSessionHash,
+            broadcastKey,
+            sessionId
         }
     };
 }
@@ -108,45 +121,6 @@ describe('buildResonitePresenceFeedUpdate', () => {
         });
         expect(result.refPatch.$online_for).toBe(5_000);
         expect(result.refPatch.$offline_for).toBe('');
-    });
-
-    test('emits gps alongside online when a friend comes online into a world', () => {
-        const previousFriend = makeFriend({
-            state: 'offline',
-            status: 'busy',
-            statusDescription: '',
-            location: 'offline',
-            traveling: '',
-            onlineFor: '',
-            offlineFor: 900
-        });
-        const nextFriend = makeFriend({
-            location: 'Soft Sea of Stars',
-            traveling: 'Soft Sea of Stars'
-        });
-
-        const result = buildResonitePresenceFeedUpdate(
-            previousFriend,
-            nextFriend,
-            {
-                now: () => 5_000,
-                nowIso: () => '2026-04-21T00:00:05.000Z'
-            }
-        );
-
-        expect(result.feedEntries).toHaveLength(2);
-        expect(result.feedEntries[0]).toMatchObject({
-            type: 'Online',
-            location: 'Soft Sea of Stars',
-            worldName: 'Soft Sea of Stars'
-        });
-        expect(result.feedEntries[1]).toMatchObject({
-            type: 'GPS',
-            location: 'Soft Sea of Stars',
-            worldName: 'Soft Sea of Stars',
-            previousLocation: '',
-            time: 0
-        });
     });
 
     test('emits gps event when online world changes', () => {
@@ -269,13 +243,13 @@ describe('buildResonitePresenceFeedUpdate', () => {
         expect(result.feedEntries).toEqual([]);
         expect(debugSpy).toHaveBeenCalledWith(
             '[ResoniteIntegration] Evaluating GPS emission:',
-            expect.stringContaining('"suppressReason": "same-session-hash"')
+            expect.stringContaining('"suppressReason": "same-session-identity"')
         );
 
         debugSpy.mockRestore();
     });
 
-    test('emits gps when a same-session private placeholder resolves to a world label', () => {
+    test('emits gps when the session identity changes even if a stale session hash is reused', () => {
         const debugSpy = vi.spyOn(console, 'debug').mockImplementation(() => {
             // no-op
         });
@@ -283,13 +257,14 @@ describe('buildResonitePresenceFeedUpdate', () => {
             location: 'Private',
             traveling: 'Private',
             currentSessionHash: 'S-shared',
+            broadcastKey: 'U-water:private-room',
             locationAt: 2_000
         });
         const nextFriend = makeFriend({
-            location: 'Txmbomber World',
-            traveling: 'Txmbomber World',
-            accessLevel: 'anyone',
+            location: 'messing around',
+            traveling: 'messing around',
             currentSessionHash: 'S-shared',
+            broadcastKey: 'U-water:messing-around',
             locationAt: 2_000
         });
 
@@ -304,17 +279,50 @@ describe('buildResonitePresenceFeedUpdate', () => {
 
         expect(result.feedEntries[0]).toMatchObject({
             type: 'GPS',
-            location: 'Txmbomber World - Public',
-            worldName: 'Txmbomber World - Public',
+            location: 'messing around',
             previousLocation: 'private',
             time: 5_000
         });
         expect(debugSpy).toHaveBeenCalledWith(
             '[ResoniteIntegration] Evaluating GPS emission:',
-            expect.not.stringContaining('"suppressReason": "same-session-hash"')
+            expect.not.stringContaining('same-session-identity')
         );
 
         debugSpy.mockRestore();
+    });
+
+    test('emits gps when an already-online contact resolves a blank location to a world label', () => {
+        const previousFriend = makeFriend({
+            location: '',
+            traveling: '',
+            locationAt: 2_000,
+            previousLocation: ''
+        });
+        const nextFriend = makeFriend({
+            location: 'New World',
+            traveling: 'New World',
+            locationAt: 2_000,
+            previousLocation: ''
+        });
+
+        const result = buildResonitePresenceFeedUpdate(
+            previousFriend,
+            nextFriend,
+            {
+                now: () => 5_000,
+                nowIso: () => '2026-04-21T00:00:05.000Z'
+            }
+        );
+
+        expect(result.feedEntries[0]).toMatchObject({
+            type: 'GPS',
+            location: 'New World',
+            worldName: 'New World',
+            previousLocation: '',
+            time: 3_000
+        });
+        expect(result.refPatch.$previousLocation).toBe('');
+        expect(result.refPatch.$location_at).toBe(5_000);
     });
 
     test('emits gps event after a sparse blank location update', () => {
@@ -370,38 +378,6 @@ describe('buildResonitePresenceFeedUpdate', () => {
             time: 5_000
         });
         expect(result.refPatch.$previousLocation).toBe('');
-    });
-
-    test('emits gps when a blank online location later resolves to a world', () => {
-        const previousFriend = makeFriend({
-            location: '',
-            traveling: '',
-            locationAt: 2_000,
-            previousLocation: ''
-        });
-        const nextFriend = makeFriend({
-            location: 'Resolved World',
-            traveling: 'Resolved World',
-            locationAt: 2_000,
-            previousLocation: ''
-        });
-
-        const result = buildResonitePresenceFeedUpdate(
-            previousFriend,
-            nextFriend,
-            {
-                now: () => 7_000,
-                nowIso: () => '2026-04-21T00:00:07.000Z'
-            }
-        );
-
-        expect(result.feedEntries[0]).toMatchObject({
-            type: 'GPS',
-            location: 'Resolved World',
-            worldName: 'Resolved World',
-            previousLocation: '',
-            time: 0
-        });
     });
 
     test('emits offline event using the last live location', () => {

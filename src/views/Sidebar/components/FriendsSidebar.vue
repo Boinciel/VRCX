@@ -568,6 +568,72 @@
         }
     }
 
+    function getResolvedResoniteSessionName(resolvedSession) {
+        return String(
+            resolvedSession?.name ||
+                resolvedSession?.session?.name ||
+                resolvedSession?.sessionInfo?.name ||
+                ''
+        ).trim();
+    }
+
+    function getResoniteGroupHeader(friendArr, groupIndex) {
+        let sessionGroupKey = '';
+        let sessionHash = '';
+        let resolvedSessionName = '';
+        let fallbackSessionName = '';
+        let accessLevel = '';
+
+        for (const friend of friendArr) {
+            const currentSessionHash = getResoniteCurrentSessionHash(friend);
+            const resolvedSession = currentSessionHash ? getResoniteSessionByHash(currentSessionHash) : null;
+
+            if (!sessionHash && currentSessionHash) {
+                sessionHash = currentSessionHash;
+            }
+
+            if (!sessionGroupKey) {
+                sessionGroupKey = getResoniteSessionGroupingKey(friend, resolvedSession);
+            }
+
+            if (!resolvedSessionName) {
+                resolvedSessionName = getResolvedResoniteSessionName(resolvedSession);
+            }
+
+            if (!fallbackSessionName) {
+                fallbackSessionName = String(
+                    friend?.resonite?.currentSessionName ||
+                        friend?.resonite?.locationName ||
+                        friend?.ref?.resonite?.currentSessionName ||
+                        friend?.ref?.resonite?.locationName ||
+                        ''
+                ).trim();
+            }
+
+            if (!accessLevel) {
+                accessLevel = String(
+                    resolvedSession?.accessLevel ||
+                        friend?.ref?.resonite?.accessLevel ||
+                        friend?.resonite?.accessLevel ||
+                        ''
+                ).trim();
+            }
+
+            if (sessionGroupKey && resolvedSessionName && accessLevel) {
+                break;
+            }
+        }
+
+        const headerGroupKey = sessionGroupKey || `resonite-group-${groupIndex}`;
+        return {
+            sessionGroupKey: headerGroupKey,
+            sessionName: formatResoniteWorldLabel(
+                resolvedSessionName || fallbackSessionName || sessionHash || headerGroupKey,
+                accessLevel
+            )
+        };
+    }
+
     function buildSameInstanceRows(rows) {
         const vrchatGroupCount = isSidebarGroupByInstance.value ? friendsInSameInstance.value.length : 0;
         const resoniteGroupCount = isSidebarGroupByInstance.value ? resoniteFriendsInSameSession.value.length : 0;
@@ -615,20 +681,7 @@
 
             resoniteFriendsInSameSession.value.forEach((friendArr, groupIndex) => {
                 if (!friendArr || !friendArr.length) return;
-                const currentSessionHash = getResoniteCurrentSessionHash(friendArr[0]);
-                const resolvedSession = currentSessionHash ? getResoniteSessionByHash(currentSessionHash) : null;
-                const sessionGroupKey =
-                    getResoniteSessionGroupingKey(friendArr[0], resolvedSession) || `resonite-group-${groupIndex}`;
-                const sessionName = formatResoniteWorldLabel(
-                    friendArr[0]?.resonite?.currentSessionName ||
-                        friendArr[0]?.resonite?.locationName ||
-                        currentSessionHash ||
-                        sessionGroupKey,
-                    resolvedSession?.accessLevel ||
-                        friendArr[0]?.ref?.resonite?.accessLevel ||
-                        friendArr[0]?.resonite?.accessLevel ||
-                        ''
-                );
+                const { sessionGroupKey, sessionName } = getResoniteGroupHeader(friendArr, groupIndex);
                 rows.push(
                     buildResoniteInstanceHeaderRow(
                         sessionName,

@@ -25,6 +25,7 @@ const {
     mockGetResoniteSessionByHash,
     mockSetResoniteRealtimePresenceListener,
     mockStopResoniteRealtimePresence,
+    mockClearResoniteRealtimePresenceForUser,
     mockClearResoniteRealtimeState,
     mockRouter
 } = vi.hoisted(() => ({
@@ -99,6 +100,7 @@ const {
     mockGetResoniteSessionByHash: vi.fn(),
     mockSetResoniteRealtimePresenceListener: vi.fn(),
     mockStopResoniteRealtimePresence: vi.fn(),
+    mockClearResoniteRealtimePresenceForUser: vi.fn(),
     mockClearResoniteRealtimeState: vi.fn(),
     mockRouter: {
         currentRoute: {
@@ -206,6 +208,8 @@ vi.mock('../../services/resoniteRealtime', () => ({
         mockSetResoniteRealtimePresenceListener(...args),
     stopResoniteRealtimePresence: (...args) =>
         mockStopResoniteRealtimePresence(...args),
+    clearResoniteRealtimePresenceForUser: (...args) =>
+        mockClearResoniteRealtimePresenceForUser(...args),
     clearResoniteRealtimeState: (...args) =>
         mockClearResoniteRealtimeState(...args)
 }));
@@ -365,6 +369,7 @@ describe('friend store - Resonite integration', () => {
         mockGetResoniteSessionByHash.mockReturnValue(null);
         mockSetResoniteRealtimePresenceListener.mockReturnValue(undefined);
         mockStopResoniteRealtimePresence.mockResolvedValue(undefined);
+        mockClearResoniteRealtimePresenceForUser.mockResolvedValue(true);
         mockClearResoniteRealtimeState.mockResolvedValue(true);
         mockDatabase.getResoniteCachedContacts.mockResolvedValue([]);
         mockDatabase.getResoniteCachedProfiles.mockResolvedValue([]);
@@ -515,70 +520,6 @@ describe('friend store - Resonite integration', () => {
             });
         });
 
-        test('startup-style silent preload followed by merged snapshot emits gps when session labels resolve', async () => {
-            const store = useFriendStore();
-            store.upsertResoniteFriend(
-                {
-                    id: 'resonite:U-resolved',
-                    name: 'Resolved Contact',
-                    state: 'online',
-                    provider: 'resonite',
-                    isExternal: true,
-                    ref: {
-                        id: 'resonite:U-resolved',
-                        displayName: 'Resolved Contact',
-                        state: 'online',
-                        status: 'active',
-                        location: 'Private',
-                        traveling: 'Private'
-                    },
-                    resonite: {
-                        userId: 'U-resolved',
-                        currentSessionHash: 'S-shared',
-                        currentSessionName: 'Private',
-                        locationName: 'Private'
-                    }
-                },
-                { emitFeed: false }
-            );
-
-            store.upsertResoniteFriend({
-                id: 'resonite:U-resolved',
-                name: 'Resolved Contact',
-                state: 'online',
-                provider: 'resonite',
-                isExternal: true,
-                ref: {
-                    id: 'resonite:U-resolved',
-                    displayName: 'Resolved Contact',
-                    state: 'online',
-                    status: 'active',
-                    location: 'Cherry Blossom Cozy',
-                    traveling: 'Cherry Blossom Cozy'
-                },
-                resonite: {
-                    userId: 'U-resolved',
-                    accessLevel: 'anyone',
-                    currentSessionHash: 'S-shared',
-                    currentSessionName: 'Cherry Blossom Cozy',
-                    locationName: 'Cherry Blossom Cozy'
-                }
-            });
-
-            expect(mockDatabase.addGPSToDatabase).toHaveBeenCalledWith(
-                expect.objectContaining({
-                    userId: 'resonite:U-resolved',
-                    location: 'Cherry Blossom Cozy - Public',
-                    worldName: 'Cherry Blossom Cozy - Public',
-                    previousLocation: 'private'
-                })
-            );
-
-            const friend = store.friends.get('resonite:U-resolved');
-            expect(friend.ref.location).toBe('Cherry Blossom Cozy');
-            expect(friend.resonite.locationName).toBe('Cherry Blossom Cozy');
-        });
-
         test('ignores stale cached contacts during startup hydration even when fresher rows exist', async () => {
             const store = useFriendStore();
             await Promise.resolve();
@@ -655,6 +596,141 @@ describe('friend store - Resonite integration', () => {
             );
         });
 
+        test('persists offline snapshot state after stale hydrated live presence is collapsed by contacts-only refresh', async () => {
+            vi.useFakeTimers();
+
+            try {
+                const store = useFriendStore();
+                await Promise.resolve();
+                await Promise.resolve();
+
+                const now = Date.now();
+                mockDatabase.getResoniteCachedContacts = vi.fn(async () => [
+                    {
+                        externalId: 'resonite:U-hydrated-offline',
+                        resoniteUserId: 'U-hydrated-offline',
+                        fetchedAt: now,
+                        lastSuccessfulSnapshotAt: now,
+                        payload: {
+                            id: 'resonite:U-hydrated-offline',
+                            name: 'Hydrated Offline',
+                            state: 'online',
+                            provider: 'resonite',
+                            isExternal: true,
+                            ref: {
+                                id: 'resonite:U-hydrated-offline',
+                                displayName: 'Hydrated Offline',
+                                state: 'online',
+                                status: 'active',
+                                location: 'Fennec Daycare - Registered',
+                                traveling: 'Fennec Daycare - Registered',
+                                statusDescription:
+                                    'Online on version 2026.4.23.1269 of Screen',
+                                contactStatus: 'Accepted',
+                                latestMessageTime:
+                                    '2026-04-28T08:34:06.8520248Z',
+                                isAccepted: true,
+                                resonite: {
+                                    locationName: 'Fennec Daycare - Registered',
+                                    currentSessionHash: 'S-hydrated',
+                                    currentSessionName:
+                                        'Fennec Daycare - Registered'
+                                }
+                            },
+                            resonite: {
+                                userId: 'U-hydrated-offline',
+                                username: 'vilhelm',
+                                hasPresenceSignals: true,
+                                contactObservedAt: now - 1_000,
+                                onlineStatus: 'online',
+                                locationName: 'Fennec Daycare - Registered',
+                                currentSessionHash: 'S-hydrated',
+                                currentSessionName:
+                                    'Fennec Daycare - Registered'
+                            }
+                        }
+                    }
+                ]);
+                mockDatabase.getResoniteCachedProfiles = vi.fn(async () => []);
+                mockMergeResoniteRealtimePresence.mockImplementation(
+                    (friends) => friends
+                );
+
+                const userStore = useUserStore();
+                userStore.currentUser.id = 'usr_test';
+                const advancedSettingsStore = useAdvancedSettingsStore();
+                await advancedSettingsStore.setResoniteIntegration(true);
+
+                const hydrated = await store.hydratePersistedResoniteState();
+
+                expect(hydrated).toBe(true);
+                expect(
+                    store.friends.get('resonite:U-hydrated-offline')?.state
+                ).toBe('online');
+
+                mockDatabase.replaceResoniteCachedContacts.mockClear();
+
+                store.upsertResoniteFriend({
+                    id: 'resonite:U-hydrated-offline',
+                    name: 'Hydrated Offline',
+                    state: 'offline',
+                    provider: 'resonite',
+                    isExternal: true,
+                    ref: {
+                        id: 'resonite:U-hydrated-offline',
+                        displayName: 'Hydrated Offline',
+                        state: 'offline',
+                        status: '',
+                        location: 'offline',
+                        traveling: '',
+                        statusDescription: '',
+                        contactStatus: 'Accepted',
+                        latestMessageTime: '2026-04-28T08:34:06.8520248Z',
+                        isAccepted: true
+                    },
+                    resonite: {
+                        userId: 'U-hydrated-offline',
+                        username: 'vilhelm',
+                        hasPresenceSignals: false,
+                        contactObservedAt: now,
+                        onlineStatus: 'offline',
+                        locationName: '',
+                        currentSessionHash: '',
+                        currentSessionName: ''
+                    }
+                });
+
+                await vi.advanceTimersByTimeAsync(600);
+
+                const friend = store.friends.get('resonite:U-hydrated-offline');
+                expect(friend.state).toBe('offline');
+                expect(friend.ref.location).toBe('offline');
+                expect(
+                    mockDatabase.replaceResoniteCachedContacts
+                ).toHaveBeenCalledWith(
+                    expect.arrayContaining([
+                        expect.objectContaining({
+                            externalId: 'resonite:U-hydrated-offline',
+                            payload: expect.objectContaining({
+                                state: 'offline',
+                                ref: expect.objectContaining({
+                                    location: 'offline',
+                                    traveling: ''
+                                }),
+                                resonite: expect.objectContaining({
+                                    locationName: '',
+                                    currentSessionHash: '',
+                                    currentSessionName: ''
+                                })
+                            })
+                        })
+                    ])
+                );
+            } finally {
+                vi.useRealTimers();
+            }
+        });
+
         test('clears cached Resonite state when switching to a different Resonite user', async () => {
             const store = useFriendStore();
             const advancedSettingsStore = useAdvancedSettingsStore();
@@ -728,7 +804,7 @@ describe('friend store - Resonite integration', () => {
     });
 
     describe('refreshResoniteFriends', () => {
-        test('VRChat friendship reconciliation ignores Resonite contacts even after they are mirrored into the friend log', async () => {
+        test('VRChat friendship reconciliation ignores Resonite contacts without synthetic friend log entries', async () => {
             const store = useFriendStore();
 
             watchState.isFriendsLoaded = true;
@@ -750,7 +826,7 @@ describe('friend store - Resonite integration', () => {
                 }
             });
 
-            expect(store.friendLog.has('resonite:U-1m51gsdtjge')).toBe(true);
+            expect(store.friendLog.has('resonite:U-1m51gsdtjge')).toBe(false);
 
             runUpdateFriendshipsFlow({
                 friends: [],
@@ -763,7 +839,7 @@ describe('friend store - Resonite integration', () => {
             await Promise.resolve();
 
             expect(mockFriendGetStatus).not.toHaveBeenCalled();
-            expect(store.friendLog.has('resonite:U-1m51gsdtjge')).toBe(true);
+            expect(store.friendLog.has('resonite:U-1m51gsdtjge')).toBe(false);
             expect(store.friends.has('resonite:U-1m51gsdtjge')).toBe(true);
             expect(
                 store.friendLogTable.data.find(
@@ -1213,87 +1289,6 @@ describe('friend store - Resonite integration', () => {
             ).not.toHaveBeenCalled();
         });
 
-        test('uses the latest realtime-merged snapshot after the listener pass', async () => {
-            const store = useFriendStore();
-            const advancedSettingsStore = useAdvancedSettingsStore();
-
-            await advancedSettingsStore.setResoniteIntegration(true);
-            await advancedSettingsStore.setResoniteApiKey(
-                'U-sync-user:token-one'
-            );
-
-            const staleSnapshot = [
-                {
-                    id: 'resonite:u-water',
-                    name: 'Water',
-                    state: 'online',
-                    provider: 'resonite',
-                    isExternal: true,
-                    ref: {
-                        id: 'resonite:u-water',
-                        displayName: 'Water',
-                        state: 'online',
-                        status: 'active',
-                        location: 'Private',
-                        traveling: 'Private',
-                        statusDescription: '',
-                        resonite: {
-                            locationName: 'Private',
-                            currentSessionName: 'Private',
-                            currentSessionHash: 'S-water'
-                        }
-                    },
-                    resonite: {
-                        onlineStatus: 'online',
-                        locationName: 'Private',
-                        currentSessionName: 'Private',
-                        currentSessionHash: 'S-water'
-                    }
-                }
-            ];
-            const updatedSnapshot = [
-                {
-                    ...staleSnapshot[0],
-                    ref: {
-                        ...staleSnapshot[0].ref,
-                        location: 'Smexy`s Bedroom',
-                        traveling: 'Smexy`s Bedroom',
-                        resonite: {
-                            ...staleSnapshot[0].ref.resonite,
-                            locationName: 'Smexy`s Bedroom',
-                            currentSessionName: 'Smexy`s Bedroom'
-                        }
-                    },
-                    resonite: {
-                        ...staleSnapshot[0].resonite,
-                        locationName: 'Smexy`s Bedroom',
-                        currentSessionName: 'Smexy`s Bedroom'
-                    }
-                }
-            ];
-
-            let mergeCallCount = 0;
-            mockMergeResoniteRealtimePresence.mockImplementation(() => {
-                mergeCallCount += 1;
-                return mergeCallCount === 1 ? staleSnapshot : updatedSnapshot;
-            });
-            mockFetchResoniteFriends.mockResolvedValue({
-                success: true,
-                friends: staleSnapshot
-            });
-
-            const result = await store.refreshResoniteFriends();
-
-            expect(result).toEqual(updatedSnapshot);
-            expect(store.friends.get('resonite:u-water')?.ref?.location).toBe(
-                'Smexy`s Bedroom'
-            );
-            expect(
-                store.friends.get('resonite:u-water')?.resonite
-                    ?.currentSessionName
-            ).toBe('Smexy`s Bedroom');
-        });
-
         test('records realtime refresh success state and clears presence retry window', async () => {
             const store = useFriendStore();
             const advancedSettingsStore = useAdvancedSettingsStore();
@@ -1448,7 +1443,7 @@ describe('friend store - Resonite integration', () => {
             await store.refreshResoniteFriends();
 
             expect(store.friends.has('resonite:U-1mImOh1WI08')).toBe(true);
-            expect(store.friendLog.has('resonite:U-1mImOh1WI08')).toBe(true);
+            expect(store.friendLog.has('resonite:U-1mImOh1WI08')).toBe(false);
             expect(
                 store.friendLogTable.data.find(
                     (entry) =>
@@ -1933,7 +1928,7 @@ describe('friend store - Resonite integration', () => {
             }
         });
 
-        test('repeated contacts-only snapshots eventually clear stale realtime presence offline', () => {
+        test('contacts-only snapshots clear live metadata after the ten minute grace window elapses', () => {
             vi.useFakeTimers();
             vi.setSystemTime(new Date('2026-04-27T21:00:00.000Z'));
 
@@ -1942,14 +1937,14 @@ describe('friend store - Resonite integration', () => {
                 const now = Date.now();
 
                 store.upsertResoniteFriend({
-                    id: 'resonite:u-contacts-repeat-offline',
-                    name: 'Repeat Offline User',
+                    id: 'resonite:u-contacts-grace-expired',
+                    name: 'Grace Expired User',
                     state: 'online',
                     provider: 'resonite',
                     isExternal: true,
                     ref: {
-                        id: 'resonite:u-contacts-repeat-offline',
-                        displayName: 'Repeat Offline User',
+                        id: 'resonite:u-contacts-grace-expired',
+                        displayName: 'Grace Expired User',
                         state: 'online',
                         status: 'active',
                         location: 'Actual World',
@@ -1969,7 +1964,7 @@ describe('friend store - Resonite integration', () => {
                         currentSessionName: 'Actual World',
                         hasPresenceSignals: true,
                         realtime: {
-                            updatedAt: now - 5 * 60_000,
+                            updatedAt: now - 11 * 60_000,
                             currentSessionHash: 'S-actual',
                             currentSessionName: 'Actual World'
                         }
@@ -1977,14 +1972,14 @@ describe('friend store - Resonite integration', () => {
                 });
 
                 store.upsertResoniteFriend({
-                    id: 'resonite:u-contacts-repeat-offline',
-                    name: 'Repeat Offline User',
+                    id: 'resonite:u-contacts-grace-expired',
+                    name: 'Grace Expired User',
                     state: 'offline',
                     provider: 'resonite',
                     isExternal: true,
                     ref: {
-                        id: 'resonite:u-contacts-repeat-offline',
-                        displayName: 'Repeat Offline User',
+                        id: 'resonite:u-contacts-grace-expired',
+                        displayName: 'Grace Expired User',
                         state: 'offline',
                         status: '',
                         location: 'offline',
@@ -2006,51 +2001,15 @@ describe('friend store - Resonite integration', () => {
                     }
                 });
 
-                let friend = store.friends.get(
-                    'resonite:u-contacts-repeat-offline'
-                );
-                expect(friend.state).toBe('online');
-                expect(friend.ref.location).toBe('Actual World');
-
-                vi.setSystemTime(new Date('2026-04-27T21:05:00.000Z'));
-
-                store.upsertResoniteFriend({
-                    id: 'resonite:u-contacts-repeat-offline',
-                    name: 'Repeat Offline User',
-                    state: 'offline',
-                    provider: 'resonite',
-                    isExternal: true,
-                    ref: {
-                        id: 'resonite:u-contacts-repeat-offline',
-                        displayName: 'Repeat Offline User',
-                        state: 'offline',
-                        status: '',
-                        location: 'offline',
-                        traveling: '',
-                        statusDescription: '',
-                        contactStatus: 'Accepted',
-                        latestMessageTime: '2026-04-27T21:05:00.000Z',
-                        isAccepted: true
-                    },
-                    resonite: {
-                        contactStatus: 'Accepted',
-                        latestMessageTime: '2026-04-27T21:05:00.000Z',
-                        isAccepted: true,
-                        contactObservedAt: now + 5 * 60_000,
-                        hasPresenceSignals: false,
-                        locationName: '',
-                        currentSessionHash: '',
-                        currentSessionName: ''
-                    }
-                });
-
-                friend = store.friends.get(
-                    'resonite:u-contacts-repeat-offline'
+                const friend = store.friends.get(
+                    'resonite:u-contacts-grace-expired'
                 );
                 expect(friend.state).toBe('offline');
                 expect(friend.pendingOffline).toBe(false);
                 expect(friend.ref.location).toBe('offline');
+                expect(friend.ref.resonite.locationName).toBe('');
                 expect(friend.ref.resonite.currentSessionHash).toBe('');
+                expect(friend.ref.resonite.currentSessionName).toBe('');
                 expect(friend.ref.contactStatus).toBe('Accepted');
             } finally {
                 vi.useRealTimers();
@@ -2141,7 +2100,7 @@ describe('friend store - Resonite integration', () => {
             );
         });
 
-        test('records Resonite friend and unfriend history in the shared friend log', async () => {
+        test('does not record Resonite friend or unfriend history in the shared friend log', async () => {
             const store = useFriendStore();
             watchState.isFriendsLoaded = true;
 
@@ -2155,34 +2114,21 @@ describe('friend store - Resonite integration', () => {
                     id: 'resonite:u-history',
                     displayName: 'History User',
                     state: 'online',
-                    contactStatus: 'Accepted',
-                    isAccepted: true,
                     latestMessageTime: '2025-01-10T12:00:00.000Z'
                 },
                 resonite: {
-                    contactStatus: 'Accepted',
-                    isAccepted: true,
                     latestMessageTime: '2025-01-10T12:00:00.000Z'
                 }
             });
 
-            expect(store.friendLog.has('resonite:u-history')).toBe(true);
-            expect(
-                store.friends.get('resonite:u-history')?.ref?.$friendNumber
-            ).toBe(1);
+            expect(store.friendLog.has('resonite:u-history')).toBe(false);
             expect(
                 store.friendLogTable.data.find(
                     (entry) =>
                         entry.type === 'Friend' &&
                         entry.userId === 'resonite:u-history'
                 )
-            ).toEqual(
-                expect.objectContaining({
-                    userId: 'resonite:u-history',
-                    displayName: 'History User',
-                    friendNumber: 1
-                })
-            );
+            ).toBeUndefined();
 
             store.removeStaleResoniteFriends(new Set());
 
@@ -2193,12 +2139,7 @@ describe('friend store - Resonite integration', () => {
                         entry.type === 'Unfriend' &&
                         entry.userId === 'resonite:u-history'
                 )
-            ).toEqual(
-                expect.objectContaining({
-                    userId: 'resonite:u-history',
-                    displayName: 'History User'
-                })
-            );
+            ).toBeUndefined();
         });
 
         test('clears stale Resonite live metadata when pending offline commits', async () => {
@@ -2270,6 +2211,11 @@ describe('friend store - Resonite integration', () => {
             expect(friend.ref.resonite.locationName).toBe('');
             expect(friend.ref.resonite.currentSessionHash).toBe('');
             expect(friend.ref.resonite.currentSessionName).toBe('');
+            expect(
+                mockClearResoniteRealtimePresenceForUser
+            ).toHaveBeenCalledWith('u-123', {
+                persistImmediately: true
+            });
         });
 
         test('preserves resolved Resonite session metadata across sparse online updates', () => {
@@ -2462,10 +2408,6 @@ describe('friend store - Resonite integration', () => {
             userStore.userDialog.friend = store.friends.get(
                 'resonite:U-1m6uEMdcCeW'
             );
-            userStore.currentUser['$resonitePresence'] = {
-                linkedContactId: 'resonite:U-self',
-                linkedUserId: 'U-self'
-            };
 
             mockDatabase['getUserStats'].mockClear();
 
@@ -2522,14 +2464,6 @@ describe('friend store - Resonite integration', () => {
                 store.friends.get('resonite:U-1m6uEMdcCeW')
             );
             expect(mockDatabase['getUserStats']).toHaveBeenCalledTimes(1);
-            expect(mockDatabase['getUserStats']).toHaveBeenCalledWith(
-                expect.objectContaining({
-                    id: 'resonite:U-1m6uEMdcCeW',
-                    sharedOnly: true,
-                    sharedWithUserId: 'resonite:U-self'
-                }),
-                false
-            );
             expect(userStore.userDialog.lastSeen).toBe(
                 '2026-04-22T07:44:00.000Z'
             );
@@ -2850,162 +2784,6 @@ describe('friend store - Resonite integration', () => {
                 resonite: {
                     currentSessionHash: 'S-second',
                     currentSessionName: 'Shared Session'
-                }
-            });
-
-            expect(store.resoniteFriendsInSameSession).toHaveLength(1);
-            expect(store.resoniteFriendsInSameSession[0]).toHaveLength(2);
-        });
-
-        test('keeps same-session Resonite grouping stable across refresh hash rotation until the new hashes resolve', () => {
-            const store = useFriendStore();
-
-            mockGetResoniteSessionByHash.mockImplementation((sessionHash) => {
-                if (
-                    sessionHash === 'S-first-old' ||
-                    sessionHash === 'S-second-old'
-                ) {
-                    return {
-                        sessionId: 'session-stable-123',
-                        accessLevel: 'contacts',
-                        broadcastKey: 'U-host:shared-room'
-                    };
-                }
-
-                return null;
-            });
-
-            store.upsertResoniteFriend({
-                id: 'resonite:u-1',
-                name: 'ResoniteUser1',
-                state: 'online',
-                provider: 'resonite',
-                isExternal: true,
-                ref: {
-                    id: 'resonite:u-1',
-                    displayName: 'ResoniteUser1',
-                    location: 'Shared Session',
-                    resonite: {
-                        currentSessionHash: 'S-first-old',
-                        sessionId: 'session-stable-123',
-                        broadcastKey: 'U-host:shared-room'
-                    }
-                },
-                resonite: {
-                    currentSessionHash: 'S-first-old',
-                    currentSessionName: 'Shared Session',
-                    sessionId: 'session-stable-123',
-                    broadcastKey: 'U-host:shared-room'
-                }
-            });
-            store.upsertResoniteFriend({
-                id: 'resonite:u-2',
-                name: 'ResoniteUser2',
-                state: 'online',
-                provider: 'resonite',
-                isExternal: true,
-                ref: {
-                    id: 'resonite:u-2',
-                    displayName: 'ResoniteUser2',
-                    location: 'Shared Session',
-                    resonite: {
-                        currentSessionHash: 'S-second-old',
-                        sessionId: 'session-stable-123',
-                        broadcastKey: 'U-host:shared-room'
-                    }
-                },
-                resonite: {
-                    currentSessionHash: 'S-second-old',
-                    currentSessionName: 'Shared Session',
-                    sessionId: 'session-stable-123',
-                    broadcastKey: 'U-host:shared-room'
-                }
-            });
-
-            store.upsertResoniteFriend({
-                id: 'resonite:u-1',
-                name: 'ResoniteUser1',
-                state: 'online',
-                provider: 'resonite',
-                isExternal: true,
-                ref: {
-                    id: 'resonite:u-1',
-                    displayName: 'ResoniteUser1',
-                    state: 'online',
-                    status: 'active',
-                    location: 'Shared Session',
-                    traveling: 'Shared Session'
-                },
-                resonite: {
-                    currentSessionHash: 'S-first-new',
-                    currentSessionName: 'Shared Session'
-                }
-            });
-            store.upsertResoniteFriend({
-                id: 'resonite:u-2',
-                name: 'ResoniteUser2',
-                state: 'online',
-                provider: 'resonite',
-                isExternal: true,
-                ref: {
-                    id: 'resonite:u-2',
-                    displayName: 'ResoniteUser2',
-                    state: 'online',
-                    status: 'active',
-                    location: 'Shared Session',
-                    traveling: 'Shared Session'
-                },
-                resonite: {
-                    currentSessionHash: 'S-second-new',
-                    currentSessionName: 'Shared Session'
-                }
-            });
-
-            expect(store.resoniteFriendsInSameSession).toHaveLength(1);
-            expect(store.resoniteFriendsInSameSession[0]).toHaveLength(2);
-        });
-
-        test('groups private Resonite sessions together when no stable session id is available', () => {
-            const store = useFriendStore();
-
-            store.upsertResoniteFriend({
-                id: 'resonite:u-private-1',
-                name: 'PrivateUser1',
-                state: 'online',
-                provider: 'resonite',
-                isExternal: true,
-                ref: {
-                    id: 'resonite:u-private-1',
-                    displayName: 'PrivateUser1',
-                    location: 'Private',
-                    resonite: {
-                        accessLevel: 'private',
-                        locationName: 'Private'
-                    }
-                },
-                resonite: {
-                    accessLevel: 'private',
-                    locationName: 'Private'
-                }
-            });
-            store.upsertResoniteFriend({
-                id: 'resonite:u-private-2',
-                name: 'PrivateUser2',
-                state: 'online',
-                provider: 'resonite',
-                isExternal: true,
-                ref: {
-                    id: 'resonite:u-private-2',
-                    displayName: 'PrivateUser2',
-                    location: 'Private',
-                    resonite: {
-                        accessLevel: 'private',
-                        locationName: 'Private'
-                    }
-                },
-                resonite: {
-                    accessLevel: 'private',
-                    locationName: 'Private'
                 }
             });
 

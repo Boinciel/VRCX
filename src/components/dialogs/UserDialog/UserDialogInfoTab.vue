@@ -86,7 +86,7 @@
                     <div
                         class="relative inline-block flex-none size-9 mr-2.5"
                         :class="
-                            resoniteSessionHost.friend?.ref
+                            resoniteSessionHost.friend
                                 ? userStatusClass(resoniteSessionHost.friend.ref)
                                 : 'x-user-status'
                         ">
@@ -104,9 +104,7 @@
                         <span
                             class="block truncate font-medium leading-[18px]"
                             :style="
-                                resoniteSessionHost.friend?.ref
-                                    ? { color: resoniteSessionHost.friend.ref?.$userColour }
-                                    : {}
+                                resoniteSessionHost.friend ? { color: resoniteSessionHost.friend.ref?.$userColour } : {}
                             "
                             v-html="renderResoniteRichText(resoniteSessionHost.displayName)" />
                         <span
@@ -128,7 +126,7 @@
                     @click="openResoniteSessionUserDialog(su)">
                     <div
                         class="relative inline-block flex-none size-9 mr-2.5"
-                        :class="su.friend?.ref ? userStatusClass(su.friend.ref) : 'x-user-status'">
+                        :class="su.friend ? userStatusClass(su.friend.ref) : 'x-user-status'">
                         <Avatar class="size-9">
                             <AvatarImage v-if="su.avatarUrl" :src="su.avatarUrl" class="object-cover" />
                             <AvatarFallback>
@@ -139,10 +137,37 @@
                     <div class="flex-1 overflow-hidden">
                         <span
                             class="block truncate font-medium leading-[18px]"
-                            :style="su.friend?.ref ? { color: su.friend.ref?.$userColour } : {}"
+                            :style="su.friend ? { color: su.friend.ref?.$userColour } : {}"
                             v-html="renderResoniteRichText(su.displayName || su.username)" />
                         <span class="block truncate text-xs text-muted-foreground">
                             {{ su.isPresent ? 'Present' : 'Away' }}
+                        </span>
+                    </div>
+                </div>
+            </div>
+            <div v-if="resoniteAdditionalSessions.length > 0" class="mt-3 flex flex-col gap-2" style="flex: none">
+                <span class="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                    Other Sessions
+                </span>
+                <div
+                    v-for="sessionEntry in resoniteAdditionalSessions"
+                    :key="sessionEntry.key"
+                    class="rounded-lg border border-border/60 px-3 py-2">
+                    <div class="flex items-center gap-2 text-sm">
+                        <img
+                            :src="resoniteProviderIconUrl"
+                            alt="Resonite"
+                            class="size-4 flex-none"
+                            loading="lazy" />
+                        <span class="font-medium" v-html="renderResoniteRichText(sessionEntry.title)" />
+                    </div>
+                    <div class="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
+                        <span v-if="sessionEntry.userCount > 0" class="inline-flex items-center gap-1">
+                            <UsersRound class="h-3.5 w-3.5" />
+                            {{ sessionEntry.userCount }}
+                        </span>
+                        <span v-if="sessionEntry.sessionHash" class="break-all">
+                            {{ sessionEntry.sessionHash }}
                         </span>
                     </div>
                 </div>
@@ -684,6 +709,7 @@
     import { fetchResoniteUserProfiles } from '../../../services/resoniteFriends';
     import {
         getResoniteSessionByHash,
+        getResoniteSessionTargets,
         refreshResoniteSessionByHash,
         resoniteSessionCacheVersion
     } from '../../../services/resoniteRealtime';
@@ -745,10 +771,6 @@
     });
     const resoniteProviderIconUrl = '/images/resonite/resonite_color.svg';
 
-    const hasResoniteSessionPanel = computed(
-        () => isResoniteExternalUser.value && Boolean(resoniteSessionTitle.value)
-    );
-
     const isCurrentDialogSelf = computed(() => {
         if (currentUser.value.id === userDialog.value.id) {
             return true;
@@ -770,23 +792,195 @@
             .includes(dialogUserId);
     });
 
-    /** Full session object from the Resonite API, resolved when the session hash is known. */
-    const resoniteSession = computed(() => {
-        if (!isResoniteExternalUser.value) return null;
-        void resoniteSessionCacheVersion.value;
-        const hash =
-            userDialog.value.ref?.resonite?.currentSessionHash ||
-            userDialog.value.ref?.resonite?.realtime?.currentSessionHash ||
-            '';
-        return hash ? getResoniteSessionByHash(hash) : null;
+    const resonitePresence = computed(() => {
+        const resonite = userDialog.value.ref?.resonite || {};
+        const realtime = resonite.realtime || {};
+
+        return {
+            ...realtime,
+            ...resonite,
+            locationName: firstNonEmptyString(
+                resonite.locationName,
+                resonite.currentSessionName,
+                realtime.locationName,
+                realtime.currentSessionName
+            ),
+            currentSessionName: firstNonEmptyString(
+                resonite.currentSessionName,
+                resonite.locationName,
+                realtime.currentSessionName,
+                realtime.locationName
+            ),
+            currentSessionHash: firstNonEmptyString(
+                resonite.currentSessionHash,
+                realtime.currentSessionHash
+            ),
+            sessionId: firstNonEmptyString(
+                resonite.sessionId,
+                realtime.sessionId
+            ),
+            broadcastKey: firstNonEmptyString(
+                resonite.broadcastKey,
+                realtime.broadcastKey
+            ),
+            accessLevel: firstNonEmptyString(
+                resonite.accessLevel,
+                realtime.accessLevel
+            ),
+            sessions: Array.isArray(resonite.sessions)
+                ? resonite.sessions
+                : Array.isArray(realtime.sessions)
+                  ? realtime.sessions
+                  : []
+        };
     });
 
+    const resoniteSessionEntries = computed(() => {
+        if (!isResoniteExternalUser.value) {
+            return [];
+        }
+
+        void resoniteSessionCacheVersion.value;
+        const presence = resonitePresence.value;
+
+        return getResoniteSessionTargets(presence).map((target, index) => {
+            const resolvedSession = target.sessionHash
+                ? getResoniteSessionByHash(target.sessionHash)
+                : null;
+            const session = resolvedSession
+                ? { ...target, ...resolvedSession }
+                : { ...target };
+            const accessLevel = firstNonEmptyString(
+                session.accessLevel,
+                index === 0 ? presence.accessLevel : ''
+            );
+            const baseTitle = firstNonEmptyString(
+                resolvedSession?.name,
+                resolvedSession?.sessionName,
+                resolvedSession?.locationName,
+                target.name,
+                target.sessionName,
+                target.locationName,
+                index === 0 ? presence.locationName : '',
+                index === 0 ? presence.currentSessionName : ''
+            );
+
+            return {
+                key: firstNonEmptyString(
+                    target.sessionId,
+                    target.broadcastKey,
+                    target.sessionHash,
+                    `resonite-session-${index}`
+                ),
+                title:
+                    baseTitle
+                        ? formatResoniteWorldLabel(baseTitle, accessLevel)
+                        : firstNonEmptyString(
+                              target.sessionHash,
+                              target.broadcastKey,
+                              target.sessionId,
+                              'Unknown Session'
+                          ),
+                accessLevel,
+                sessionHash: firstNonEmptyString(
+                    session.sessionHash,
+                    target.sessionHash
+                ),
+                sessionId: firstNonEmptyString(
+                    session.sessionId,
+                    target.sessionId
+                ),
+                broadcastKey: firstNonEmptyString(
+                    session.broadcastKey,
+                    target.broadcastKey
+                ),
+                userCount: getResoniteSessionUserCount(session),
+                thumbnailUrl: getResoniteSessionThumbnailUrl(session),
+                session,
+                normalizedTitle: normalizeResoniteSessionTitle(baseTitle),
+                hasResolvedSession: Boolean(resolvedSession),
+                isCurrent: index === 0
+            };
+        });
+    });
+
+    const resonitePrimarySessionEntry = computed(() => {
+        const entries = resoniteSessionEntries.value;
+        if (entries.length === 0) {
+            return null;
+        }
+
+        const currentEntry = entries[0];
+        if (currentEntry?.hasResolvedSession) {
+            return currentEntry;
+        }
+
+        const preferredTitle = normalizeResoniteSessionTitle(
+            firstNonEmptyString(
+                resonitePresence.value?.currentSessionName,
+                resonitePresence.value?.locationName
+            )
+        );
+
+        const matchingResolvedEntry = entries.find((entry) => {
+            if (!entry?.hasResolvedSession) {
+                return false;
+            }
+
+            if (
+                preferredTitle &&
+                entry.normalizedTitle &&
+                entry.normalizedTitle === preferredTitle
+            ) {
+                return true;
+            }
+
+            return doesResolvedSessionContainDialogUser(entry.session);
+        });
+
+        return matchingResolvedEntry || currentEntry;
+    });
+
+    const resoniteAdditionalSessions = computed(() => {
+        const primaryEntry = resonitePrimarySessionEntry.value;
+        const primaryIdentity = getResolvedResoniteSessionIdentity(primaryEntry);
+        const seen = new Set(primaryIdentity ? [primaryIdentity] : []);
+
+        return resoniteSessionEntries.value.filter((sessionEntry) => {
+            if (sessionEntry?.key === primaryEntry?.key) {
+                return false;
+            }
+
+            if (!sessionEntry?.hasResolvedSession) {
+                return false;
+            }
+
+            const sessionIdentity = getResolvedResoniteSessionIdentity(
+                sessionEntry
+            );
+            if (sessionIdentity && seen.has(sessionIdentity)) {
+                return false;
+            }
+
+            if (sessionIdentity) {
+                seen.add(sessionIdentity);
+            }
+
+            return true;
+        });
+    });
+
+    const hasResoniteSessionPanel = computed(
+        () => isResoniteExternalUser.value && resoniteSessionEntries.value.length > 0
+    );
+
+    /** Full session object from the Resonite API, resolved when the session hash is known. */
+    const resoniteSession = computed(() =>
+        resonitePrimarySessionEntry.value?.session || null
+    );
+
     const resonitePresenceLocation = computed(() =>
-        String(
-            userDialog.value.ref?.resonite?.locationName ||
-                userDialog.value.ref?.resonite?.currentSessionName ||
-                ''
-        )
+        String(resonitePresence.value?.locationName || resonitePresence.value?.currentSessionName || '')
             .trim()
             .toLowerCase()
     );
@@ -798,9 +992,9 @@
 
         const hasKnownSession = Boolean(
             String(
-                userDialog.value.ref?.resonite?.currentSessionHash ||
-                    userDialog.value.ref?.resonite?.realtime?.currentSessionHash ||
-                    resoniteSession.value?.sessionId ||
+                resonitePrimarySessionEntry.value?.sessionHash ||
+                    resonitePrimarySessionEntry.value?.sessionId ||
+                    resonitePrimarySessionEntry.value?.broadcastKey ||
                     ''
             ).trim()
         );
@@ -826,31 +1020,13 @@
     });
 
     /** Resonite session title formatted like "World - Contacts+". */
-    const resoniteSessionTitle = computed(() => {
-        return formatResoniteWorldLabel(
-            String(
-                resoniteSession.value?.name ||
-                    resoniteSession.value?.sessionName ||
-                    resoniteSession.value?.locationName ||
-                    resoniteSession.value?.worldName ||
-                    resoniteSession.value?.world?.name ||
-                    userDialog.value.ref?.resonite?.locationName ||
-                    userDialog.value.ref?.resonite?.currentSessionName ||
-                    ''
-            ).trim(),
-            resoniteSession.value?.accessLevel
-        );
-    });
+    const resoniteSessionTitle = computed(
+        () => resonitePrimarySessionEntry.value?.title || ''
+    );
 
     /** Preferred session thumbnail URL from Resonite session payload. */
-    const resoniteSessionThumbnailUrl = computed(() =>
-        String(
-            resoniteSession.value?.thumbnailUrl ||
-                resoniteSession.value?.thumbnailURL ||
-                resoniteSession.value?.world?.thumbnailUrl ||
-                resoniteSession.value?.world?.thumbnailURL ||
-                ''
-        ).trim()
+    const resoniteSessionThumbnailUrl = computed(
+        () => resonitePrimarySessionEntry.value?.thumbnailUrl || ''
     );
 
     const resoniteHostBadge = Object.freeze(
@@ -1098,16 +1274,12 @@
             return explicitUrl;
         }
 
-        const sessionId = String(resoniteSession.value?.sessionId || '').trim();
+        const sessionId = String(resonitePrimarySessionEntry.value?.sessionId || '').trim();
         if (sessionId) {
             return `resonite://session/${encodeURIComponent(sessionId)}`;
         }
 
-        const sessionHash = String(
-            userDialog.value.ref?.resonite?.currentSessionHash ||
-                userDialog.value.ref?.resonite?.realtime?.currentSessionHash ||
-                ''
-        ).trim();
+        const sessionHash = String(resonitePrimarySessionEntry.value?.sessionHash || '').trim();
         return sessionHash ? `resonite://session/${encodeURIComponent(sessionHash)}` : '';
     });
 
@@ -1120,10 +1292,15 @@
         isRefreshingResoniteSession.value = true;
         try {
             const resonite = userDialog.value.ref?.resonite || {};
-            const sessionHash = String(
-                resonite.currentSessionHash || resonite.realtime?.currentSessionHash || ''
-            ).trim();
-            if (sessionHash) {
+            const sessionHashes = [
+                ...new Set(
+                    resoniteSessionEntries.value
+                        .map((sessionEntry) => String(sessionEntry.sessionHash || '').trim())
+                        .filter(Boolean)
+                )
+            ];
+
+            for (const sessionHash of sessionHashes) {
                 await refreshResoniteSessionByHash({
                     sessionHash,
                     userId: resonite.userId || userDialog.value.id,
@@ -1218,6 +1395,71 @@
         }
 
         return '';
+    }
+
+    function getResoniteSessionUserCount(session) {
+        const joinedUsers = Number(session?.joinedUsers);
+        if (Number.isFinite(joinedUsers) && joinedUsers > 0) {
+            return joinedUsers;
+        }
+
+        const totalActiveUsers = Number(session?.totalActiveUsers);
+        if (Number.isFinite(totalActiveUsers) && totalActiveUsers > 0) {
+            return totalActiveUsers;
+        }
+
+        return Array.isArray(session?.sessionUsers) ? session.sessionUsers.length : 0;
+    }
+
+    function getResoniteSessionThumbnailUrl(session) {
+        return String(
+            session?.thumbnailUrl ||
+                session?.thumbnailURL ||
+                session?.world?.thumbnailUrl ||
+                session?.world?.thumbnailURL ||
+                ''
+        ).trim();
+    }
+
+    function getResolvedResoniteSessionIdentity(sessionEntry) {
+        if (!sessionEntry?.hasResolvedSession) {
+            return '';
+        }
+
+        return firstNonEmptyString(
+            sessionEntry?.session?.sessionId,
+            sessionEntry?.session?.broadcastKey,
+            sessionEntry?.session?.sessionHash,
+            sessionEntry?.sessionId,
+            sessionEntry?.broadcastKey,
+            sessionEntry?.sessionHash
+        );
+    }
+
+    function doesResolvedSessionContainDialogUser(session) {
+        const dialogUserId = stripResonitePrefix(
+            firstNonEmptyString(userDialog.value.id, userDialog.value.ref?.id)
+        );
+        if (!dialogUserId || !session || typeof session !== 'object') {
+            return false;
+        }
+
+        if (String(session.hostUserId || '').trim() === dialogUserId) {
+            return true;
+        }
+
+        return Array.isArray(session.sessionUsers)
+            ? session.sessionUsers.some(
+                  (sessionUser) =>
+                      String(
+                          sessionUser?.userID || sessionUser?.id || ''
+                      ).trim() === dialogUserId
+              )
+            : false;
+    }
+
+    function normalizeResoniteSessionTitle(value) {
+        return String(value || '').trim().toLowerCase();
     }
 
     const bioCache = ref({
